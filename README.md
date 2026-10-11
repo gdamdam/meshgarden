@@ -230,12 +230,6 @@ client `2.7.11`. Service radio is a Seeed XIAO ESP32S3 & Wio-SX1262 Kit, visitor
 Wio Tracker L1 Pro, both on firmware `2.7.26.54e0d8d`. MeshCore is in live field use, but a
 repeatable hardware matrix is still incomplete for both transports.
 
-This release is `1.10.0`. Unreleased changes are in `CHANGELOG.md`. Not yet:
-weather correlation on the propagation page, and dual-radio or shared-BBS operation.
-
-Deliberately out of scope: AI chatbots, Wikipedia search, emergency data, MQTT bridging, federation,
-and a traditional BBS web frontend. Channel features stay public, read-only, and bounded.
-`HELP` was retired as the menu word because it can be a genuine distress message.
 
 ## Documentation
 
