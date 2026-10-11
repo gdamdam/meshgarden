@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.db
+*.db-wal
+*.db-shm
+.superpowers/
+config.toml
+
+# Development / Claude Code material (kept local, not published)
+docs/superpowers/
+.superpowers/
+.claude/
+mnt/
+pi-journal-extract.txt
+.journal_extract.py
+ccc.toml
+prompt.md
+local/

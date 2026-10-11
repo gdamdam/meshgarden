@@ -1,0 +1,110 @@
+name: Bug report
+description: Report a problem with the Meshgarden daemon or CLI
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please **do not** include channel keys,
+        PINs, or personal identifiers anywhere in this report — see the
+        redaction note below.
+
+  - type: input
+    id: version
+    attributes:
+      label: Meshgarden version
+      description: Output of `mgarden --version`
+      placeholder: e.g. 1.1.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - Installer script
+        - pip
+        - From source
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: e.g. Ubuntu 24.04, Debian 12
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: e.g. 3.13.1
+    validations:
+      required: true
+
+  - type: input
+    id: radio-model
+    attributes:
+      label: Radio model
+      placeholder: e.g. T1000-E, Wio-SX1262
+    validations:
+      required: true
+
+  - type: input
+    id: firmware-version
+    attributes:
+      label: Meshtastic firmware version
+    validations:
+      required: true
+
+  - type: input
+    id: meshtastic-lib-version
+    attributes:
+      label: meshtastic Python library version
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What actually happened, versus what you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >
+        The exact DMs sent (in order), and any CLI commands run.
+      placeholder: |
+        1. DM the node: "MENU"
+        2. DM the node: "SIGN test entry"
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: >
+        Output from `journalctl -u meshgarden` (or your service unit),
+        `mgarden doctor`, or `mgarden requests` output. Redact node ids and
+        names first: replace every node id with `!xxxxxxxx` and every
+        display name with a placeholder.
+      render: shell
+
+  - type: checkboxes
+    id: no-secrets
+    attributes:
+      label: Confirmation
+      options:
+        - label: >
+            I confirm this report contains no channel keys, PINs, or
+            personal identifiers.
+          required: true

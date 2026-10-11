@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: lint + tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported (pyproject requires-python) and the version the
+        # README advertises as tested.
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+
+      # --locked: asserts the lockfile matches pyproject.toml and fails
+      # otherwise, so lockfile drift is caught here instead of re-resolving
+      # silently (which --frozen alone would not fail on).
+      # --extra meshcore: the MeshCore transport is the primary radio path,
+      # so CI installs the optional package and actually runs its tests
+      # rather than skipping them. The Meshtastic-only (package absent)
+      # path stays covered by the tests that block the import outright.
+      - name: Install
+        run: uv sync --locked --extra meshcore
+
+      - name: Ruff
+        run: uv run ruff check meshgarden tests
+
+      # Hardware tests are deselected by pyproject's addopts (-m 'not
+      # hardware'); no radio is attached in CI.
+      - name: Tests
+        run: uv run pytest -q

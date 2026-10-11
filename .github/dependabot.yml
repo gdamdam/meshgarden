@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Python dependencies are locked in uv.lock; Dependabot's uv support
+  # keeps the lockfile and pyproject in step. Weekly is enough for a
+  # one-maintainer project -- security advisories still arrive immediately
+  # through Dependabot alerts, which are enabled separately in repo settings.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

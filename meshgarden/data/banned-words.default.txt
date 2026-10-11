@@ -1,0 +1,93 @@
+# Meshgarden default SIGN banned-word list.
+#
+# One term per line; "#" starts a trailing or full-line comment; blank lines
+# are skipped. Matching is WHOLE-WORD only (moderation.find_banned_term):
+# "cunt" here never matches inside "Scunthorpe", and "shit" never matches
+# inside "shitake" -- a term only trips the guard as its own word (or, for a
+# multi-word term, an exact contiguous phrase).
+#
+# This is a conservative, English-only STARTING POINT, not a complete or
+# authoritative list: it favors common profanity and widely-recognized
+# slurs, skips ambiguous common words that would false-positive too often
+# (e.g. words that are also ordinary nouns), and every entry is at least 4
+# characters to avoid short tokens that collide with everyday words. Operators
+# are expected to review and adapt it (`[moderation] banned_words_file` can
+# point at your own file instead of the special value "default").
+
+# --- profanity / vulgar insults ---
+#fuck
+fucker
+#fucking
+fuckface
+fuckhead
+motherfucker
+#shit
+shithead
+#shitty
+#bullshit
+#horseshit
+#dipshit
+#bitch
+#bitches
+bastard
+asshole
+asswipe
+dumbass
+jackass
+cunt
+twat
+wanker
+bollocks
+bugger
+douche
+douchebag
+skank
+slut
+whore
+cocksucker
+prick
+dickhead
+dickwad
+munter
+minger
+arsehole
+rape
+rapist
+
+# --- ethnic / national / religious slurs ---
+nigger
+nigga
+chink
+gook
+spic
+wetback
+beaner
+kike
+raghead
+towelhead
+dothead
+paki
+dago
+honky
+coon
+chinaman
+squaw
+redskin
+
+# --- homophobic / transphobic slurs ---
+faggot
+faggots
+tranny
+trannies
+poof
+poofter
+
+# --- ableist slurs ---
+retard
+retarded
+spaz
+imbecile
+
+# --- other misogynistic slurs ---
+slag
+thot

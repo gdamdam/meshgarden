@@ -1,0 +1,238 @@
+# Meshgarden example configuration.
+#
+# Copy this file to /etc/meshtastic-observatory/config.toml (or point
+# --config / MESHTASTIC_OBSERVATORY_CONFIG at your own copy) and fill in the
+# two REPLACE_WITH_... placeholders below. This file is deliberately
+# rejected UNMODIFIED: the placeholder device path parses, but the
+# placeholder node ID fails the "!xxxxxxxx" hex-id check, so parse_config()
+# raises ConfigError until you supply your radio's real identity.
+#
+# service.mode selects private-only or optional public read-only MeshCore replies.
+# application_retries is bounded to 0..3; retries use a fixed interval.
+
+[radio]
+# Serial device path; prefer a stable /dev/serial/by-id/... symlink over a raw /dev/ttyUSB*/ttyACM*.
+# Also the MeshCore serial port/device string when transport = "meshcore".
+device = "/dev/serial/by-id/REPLACE_WITH_YOUR_RADIO"
+# Expected "!xxxxxxxx" node ID, checked against the radio at every (re)connect; edit+restart to replace a radio.
+expected_node_id = "!REPLACE_WITH_NODE_ID"
+# Radio backend: "meshtastic" (default) or "meshcore". Meshtastic behavior is unchanged either way.
+transport = "meshtastic"
+# MeshCore channel used for knocks and, when service.mode="channel", public
+# read-only commands/replies. Ignored by Meshtastic. Empty disables it.
+meshcore_channel = "meshgarden"
+# Min seconds between two channel-knock invite DMs to the SAME resolved recipient (a channel sender's claimed name is unauthenticated, so this bounds a forged one's cost). Ignored by Meshtastic and by a channel-less MeshCore install.
+meshcore_knock_cooldown_seconds = 60
+# Max knock invite DMs concurrently queued/in-flight, system-wide (separate from service.max_pending_replies) -- bounds how much of the shared reply queue a burst of forged knocks can occupy. Ignored by Meshtastic and by a channel-less MeshCore install.
+meshcore_max_pending_knocks = 1
+# When true, the MeshCore adapter performs its one permitted PERSISTED radio config write on every connection (firmware autoadd_config bit, read-modify-write). Separately, and regardless of this setting, the adapter also sets the radio's clock from host time on every connection (volatile state a power loss wipes, not persisted config -- the firmware refuses to move the clock backwards, so an ahead clock is left alone). Ignored by Meshtastic.
+meshcore_autoadd_overwrite = false
+# Optional override for MeshCore's max reply size in UTF-8 bytes. Unset by default (uses the transport's own conservative default, currently 120); set only once hardware measurement (task 5A) establishes a different safe figure. Ignored by Meshtastic.
+# meshcore_max_text_bytes = 120
+# Seconds before the first MeshCore outer-loop reconnect retry after a failed connect or a session shorter than meshcore_min_stable_session_seconds; doubles on each further consecutive failure, up to meshcore_backoff_max_seconds. Ignored by Meshtastic.
+meshcore_backoff_base_seconds = 1.0
+meshcore_backoff_max_seconds = 300.0
+# How many times the MeshCore library's own inner auto_reconnect retries a transient mid-session drop before giving up and rebuilding the connection from scratch. Ignored by Meshtastic.
+meshcore_max_reconnect_attempts = 3
+# A MeshCore session shorter than this (seconds) does not reset the outer backoff counter -- it keeps escalating like any other repeated failure instead of retrying at the base delay forever. Ignored by Meshtastic.
+meshcore_min_stable_session_seconds = 30.0
+# How often, in seconds, the MeshCore adapter repeats its flood self-advertisement beyond the one it already sends on every successful connection; a node that never heard an advert cannot resolve a path back to this radio. Default 14400 (4 hours). 0 disables the periodic repeat only -- the per-connection advert is unconditional. Ignored by Meshtastic, whose firmware already beacons on its own.
+meshcore_advert_interval_seconds = 14400
+# Daily contact-table housekeeping. Off by default. When enabled, once per local day at or after meshcore_contact_prune_hour the daemon removes least-recently-heard contacts from the radio until at most meshcore_contact_target remain, so new nodes can still be auto-added. Never removes a contact that has ever sent the garden a command or mail, holds a LAB unlock or mail prefs, or is a repeater/room. Ignored by Meshtastic.
+meshcore_contact_prune_enabled = false
+meshcore_contact_target = 300
+meshcore_contact_prune_hour = 4          # local hour 0-23 in [service] timezone
+meshcore_contact_prune_max_per_day = 50
+# Optional REPEATER command target. Keep the password only in the private deployment config; set both values or neither.
+meshcore_repeater_public_key = ""
+meshcore_repeater_guest_password = ""
+# REPEATER never waits for RF: the first request starts one background query and a later request reads this cache.
+meshcore_repeater_cache_seconds = 300
+meshcore_repeater_query_timeout_seconds = 15
+
+[service]
+# Operator-facing name announced in the INFO reply.
+name = "Meshgarden Guestbook"
+# "dm_only" keeps commands and replies private (the configured MeshCore channel
+# accepts only !garden/!dm knocks). "channel" also executes recognized commands
+# posted on that MeshCore channel and replies there. Mail, writes, stateful
+# games, unlocks, and personalized node state remain DM-only.
+mode = "dm_only"
+# Whether outgoing replies request delivery acknowledgement. Only true is accepted.
+want_ack = true
+# Retry up to three times while a submitted reply remains unacknowledged. Set 0 to disable.
+application_retries = 3
+# Fixed interval between retries: 15 seconds by default. A newer reply or late ACK cancels the remainder.
+application_retry_delay_seconds = 15
+# Experimental MeshCore policy: normal DM, then at most one encrypted flood retry.
+# No telemetry permission required; replaces legacy retries for selected nodes.
+mobile_dm_recovery_enabled = false
+# Empty means all MeshCore destinations when enabled; use ["!a1b2c3d4"] for a single node.
+mobile_dm_recovery_destinations = []
+# Per-destination fallback cooldown, minimum 300 seconds (process-local).
+mobile_dm_recovery_cooldown_seconds = 300
+# Maximum extra fallbacks per rolling hour (1..6), separate from normal sends.
+mobile_dm_global_recoveries_per_hour = 6
+# Minimum spacing between fallback attempts across all destinations, at least 30 seconds.
+mobile_dm_recovery_min_interval_seconds = 30
+# 0 disables retries for selected nodes; 1 permits a single flood fallback.
+mobile_dm_max_retries = 1
+# Maximum length, in Unicode characters, of a SIGN message after normalization.
+max_guestbook_chars = 100
+# Number of most-recent visible guestbook entries returned by GUESTBOOK.
+guestbook_entries_returned = 3
+# Maximum size, in UTF-8 bytes, of any single outbound reply (one text payload).
+max_response_bytes = 180
+# Minimum seconds between two accepted commands from the same sender.
+per_node_cooldown_seconds = 30
+# Minimum seconds between any two outbound application replies, service-wide.
+global_tx_cooldown_seconds = 5
+# Seconds a reply on the MeshCore channel waits before transmission (0-30), so the
+# request's own flood -- repeaters re-sending it -- has died down first. 0 sends at
+# once. DMs are never delayed.
+channel_reply_delay_seconds = 6
+# Minimum seconds between two accepted SIGN entries from the same sender.
+sign_cooldown_seconds = 3600
+# Seconds after receipt before a queued reply expires and is dropped unsent.
+reply_ttl_seconds = 60
+# Maximum number of replies allowed to sit in the outbound queue at once.
+max_pending_replies = 4
+# Hours a (sender, packet ID) pair is remembered to reject duplicate delivery.
+request_dedup_hours = 24
+# Hours identical normalized SIGN text from the same sender is suppressed, even under a new packet ID.
+identical_sign_dedup_hours = 24
+# Seconds a sent reply may sit in 'submitted' (awaiting a matching ROUTING ack) before it is aged to 'unknown'.
+ack_timeout_seconds = 300
+# Optional word HAIKU uses in place of its own generic default (e.g. "the mesh") when set. Sanitized like SIGN text, max 32 characters. Empty by default (e.g. haiku_place = "Potrero").
+haiku_place = ""
+# IANA zone name (e.g. "America/Los_Angeles") used to compute the local calendar day ICHING's per-sender-per-day hexagram is keyed on. Validated at load time.
+timezone = "UTC"
+# Optional secret mixed into ICHING's per-sender-per-day hexagram derivation so a visitor cannot compute another sender's draw. Max 64 characters. Empty by default.
+fortune_salt = ""
+# Which daily draw /api/daily.json serves to an external display. "haiku" is the only value.
+daily_display = "haiku"
+# Maximum accepted commands per node per local day; the first further command gets a throttled private reset-time notice (bounded "quota" outcome).
+daily_command_quota = 60
+# Maximum new SIGN entries per node per local day; further SIGNs that day get a "Daily sign limit reached" reply instead of being saved (bounded "sign_quota" outcome). Independent of daily_command_quota.
+daily_sign_quota = 3
+# Whether SEEN <node> is answered at all; false makes it behave exactly like an unrecognized command. The other directory/boards/mail commands have no such toggle.
+seen_enabled = true
+# Maximum new POSTs per node per local day; the first further POST gets a throttled private reset-time notice (bounded "post_quota" outcome). Independent of daily_sign_quota/daily_command_quota.
+daily_post_quota = 5
+# Maximum MAIL <node|@alias> <msg> sends per node per local day; the first further send gets a throttled private reset-time notice (bounded "mail_quota" outcome).
+daily_mail_quota = 3
+# Maximum distinct board topics that may ever be created (including hidden/moderated ones); a POST creating a brand-new topic beyond this cap is silently dropped, but posting to an existing topic is never capped by this.
+max_topics = 50
+# Maximum undelivered notes held per recipient; a MAIL send beyond this is silently not stored (the sender still gets the same neutral acknowledgement).
+mail_pending_limit = 5
+# Expose MAIL/INBOX/REPLY outside LAB; recipients still must send MAIL ON.
+mail_public = true
+# Operator-configured word that unlocks the LAB tier (POST/READ/BOARDS, plus MAIL/REPLY when mail_public=false) for the node that DMs it, one time. "" (default) means the tier is off entirely. Never logged, echoed, or printed by CLI/doctor output.
+lab_unlock_word = ""
+
+[database]
+# Path to the SQLite database file (WAL mode; -wal/-shm siblings live alongside it).
+path = "/var/lib/meshtastic-observatory/observatory.db"
+
+[retention]
+# Days raw observations/observatory-only node records are kept (configurable metadata-field retention; fields collected are fixed in code).
+observations_days = 7
+# Days daily aggregate statistics (daily_stats) are kept before pruning.
+aggregates_days = 90
+# Only 0 is supported in v1: guestbook entries are kept until an operator hides/deletes them.
+# Any other value is rejected at config load time (never silently ignored).
+guestbook_expiry_days = 0 # no automatic expiry
+# Total managed storage cap in MiB, covering the database, backups, and logs together.
+max_managed_storage_mib = 1024
+# Days node_daily (per-node-per-day observatory rollups) are kept before pruning.
+node_daily_days = 365
+# Days since a links row's last_seen before it is pruned.
+links_days = 30
+# Days an undelivered MAIL note is kept before the maintenance tick prunes it (delivered notes are deleted immediately at delivery time).
+mail_expiry_days = 7
+
+[observatory]
+# Operator-set location used only to compute distances (haversine) for GARDEN's
+# "furthest direct" and RECORD's "furthest observed" fields. (0.0, 0.0) is the
+# "unset" sentinel -- leave both at 0.0 to omit those fields entirely.
+latitude = 0.0
+longitude = 0.0
+# Whether POSITION_APP fields (lat/lon/altitude/precision) are persisted at all.
+# Positions are always voluntarily advertised by the sending node; this is a
+# local capture toggle only -- Meshgarden never broadcasts anything from it.
+enabled_position_capture = true
+# Whether a DM of the form "Saved position: lat, lon" or "GPS position: lat, lon"
+# (the MeshCore app's location share) is recorded in dm_positions and
+# acknowledged. Off by default: it is the one case where coordinates typed
+# into a DM are persisted. Browse with `mgarden positions`.
+dm_position_capture = false
+# Distance-plausibility thresholds for "furthest direct"/"furthest observed"
+# (all must be > 0). A direct packet (hops_away=0) must be within
+# max_direct_km; a routed packet with h>=1 known hops must be within
+# min(max_observed_km, h * max_km_per_hop); a packet with unknown hops is
+# never eligible. See the observatory data model notes.
+max_direct_km = 400.0
+max_km_per_hop = 150.0
+max_observed_km = 1000.0
+
+[backup]
+# Directory consistent SQLite backups are written to.
+directory = "/var/lib/meshtastic-observatory/backups"
+# Minimum hours between automatic backups.
+interval_hours = 24
+# Number of most-recent backup files to retain; older ones are rotated out.
+keep = 7
+
+[metrics]
+# Address the Prometheus /metrics HTTP endpoint binds to; loopback by default (non-loopback logs a warning).
+listen = "127.0.0.1"
+# TCP port the Prometheus /metrics HTTP endpoint listens on.
+port = 9108
+
+[web]
+# Local, read-only, no-authentication dashboard. Disabled by default -- an
+# explicit operator opt-in, same convention as [metrics] but stricter (see
+# allow_lan below). GET only: there are no write actions of any kind, and
+# no login, so anyone who can reach listen:port can read everything the
+# dashboard shows (guestbook text included).
+enabled = false
+# Bind address. Loopback (127.0.0.1/::1/"localhost") always allowed; any
+# other address is REFUSED at startup unless allow_lan is also true.
+listen = "127.0.0.1"
+# TCP port the dashboard listens on.
+port = 9109
+# Must be explicitly set to true to bind a non-loopback listen address
+# (e.g. to reach the dashboard from another machine on the LAN). Logs a
+# WARNING when true and listen is non-loopback. False by default: a
+# non-loopback listen address is refused (the daemon fails to start)
+# rather than silently exposing the dashboard.
+allow_lan = false
+
+[moderation]
+# Path to a one-term-per-line banned-words file ("#" starts a comment; blank lines skipped) checked against every SIGN. A match is stored hidden (moderation_reason="banned_word") rather than discarded -- silent to the visitor, who still gets the normal ack. Empty (default) disables the guard entirely. When set, the file must exist and be readable at config load time.
+# The special value "default" uses the conservative English list packaged with Meshgarden (meshgarden/data/banned-words.default.txt) instead of a filesystem path -- e.g. banned_words_file = "default".
+banned_words_file = ""
+
+[weather]
+# Broadcast U.S. National Weather Service Warnings and Watches on a second,
+# public MeshCore channel. Off by default. This is a supplemental tool, not an
+# emergency service: keep an official warning source. Requires
+# radio.transport = "meshcore"; the channel must exist on the radio.
+enabled = false
+# Public hashtag channel (anyone who types the name joins). Must differ from
+# radio.meshcore_channel.
+channel = "#wx-bay"
+# NWS asks for an identifying User-Agent; put an email or URL here.
+contact = ""
+# NWS county UGC codes. Default: the nine San Francisco Bay Area counties.
+counties = ["CAC001", "CAC013", "CAC041", "CAC055", "CAC075", "CAC081", "CAC085", "CAC095", "CAC097"]
+# Keep an alert only if its event name ends with one of these words.
+event_suffixes = ["Warning", "Watch"]
+# Minimum NWS severity: Minor | Moderate | Severe | Extreme. "Unknown" always passes.
+min_severity = "Moderate"
+# Seconds between polls of api.weather.gov (minimum 30).
+poll_interval_seconds = 120
+# Hard cap on weather lines per rolling hour.
+max_sends_per_hour = 6
+# Local hour (service.timezone) for a daily "feed is alive" line; -1 = off.
+heartbeat_hour = -1

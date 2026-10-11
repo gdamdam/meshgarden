@@ -1,0 +1,48 @@
+# LEGACY UNIT -- kept for backward compatibility with existing installs.
+# New installs should use systemd/meshgarden.service instead, installed
+# automatically by scripts/install-rpi.sh (service user "meshgarden",
+# config at /etc/meshgarden/config.toml, state under /var/lib/meshgarden).
+# See README's "Raspberry Pi installation" section.
+[Unit]
+Description=Meshgarden - Meshtastic Guestbook + Observatory
+After=network.target
+
+[Service]
+Type=notify
+User=meshobs
+Group=meshobs
+SupplementaryGroups=dialout
+ExecStart=/opt/meshtastic-observatory/.venv/bin/meshtastic-observatory --config /etc/meshtastic-observatory/config.toml run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+# The daemon sends READY=1 once at startup and WATCHDOG=1 every
+# WATCHDOG_USEC/2 from its main loop (see run_forever/_sd_notify in
+# main.py) -- but ONLY while every worker (DB, TX, radio, maintenance)
+# heartbeat is fresh. It stops pinging the moment any one worker stalls,
+# so systemd's own WatchdogSec timeout below restarts the unit exactly as
+# if the process had hung outright. No effect on a plain `Type=simple`
+# checkout of this file: both lines are additive and require no new
+# dependency (sd_notify is a ~20-line AF_UNIX datagram, not the optional
+# `sdnotify` package).
+WatchdogSec=120
+StateDirectory=meshtastic-observatory
+StateDirectoryMode=0700
+ConfigurationDirectory=meshtastic-observatory
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+# AF_INET/AF_INET6 already covers the optional [web] local dashboard
+# (loopback by default; see README's "Local dashboard" section) the same
+# way it already covers [metrics] -- no unit changes needed to enable it.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-ttyACM rw
+ReadWritePaths=/var/lib/meshtastic-observatory
+
+[Install]
+WantedBy=multi-user.target
