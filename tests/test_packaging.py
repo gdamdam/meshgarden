@@ -37,7 +37,7 @@ def test_readme_documents_the_v1_exclusions_and_the_invariant():
     text = (ROOT / "README.md").read_text()
     # Channel mode is an explicit, bounded exception; the invariant is that
     # the response stays on the request's interaction surface.
-    assert "Every reply goes back the way the request came." in text
+    assert "Every reply goes back the way the request came" in text
     assert "Channel features stay public, read-only, and bounded." in text
     for word in ["MQTT bridging", "federation", "web frontend"]:
         assert word in text
@@ -182,13 +182,13 @@ def test_message_content_guard_exempts_only_the_exchange_logger():
 
 def test_readme_has_the_required_title():
     text = (ROOT / "README.md").read_text()
-    assert text.startswith('<h1 align="center">🌱 Meshgarden 🌱</h1>\n')
-    assert "MeshCore-first, Meshtastic supported." in text
+    assert text.startswith('<h1 align="center">Meshgarden</h1>\n')
+    assert "MeshCore first, Meshtastic supported." in text
 
 
 def test_readme_has_gpl_badge():
     text = (ROOT / "README.md").read_text()
-    assert "License-GPL--3.0" in text
+    assert "license-GPL--3.0" in text
 
 
 def test_hardware_fixtures_never_hold_the_service_device_open():
