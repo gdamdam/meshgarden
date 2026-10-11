@@ -230,7 +230,6 @@ client `2.7.11`. Service radio is a Seeed XIAO ESP32S3 & Wio-SX1262 Kit, visitor
 Wio Tracker L1 Pro, both on firmware `2.7.26.54e0d8d`. MeshCore is in live field use, but a
 repeatable hardware matrix is still incomplete for both transports.
 
-
 ## Documentation
 
 | Document | Covers |
