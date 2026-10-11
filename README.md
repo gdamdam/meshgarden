@@ -1,15 +1,11 @@
-<h1 align="center">🌱 Meshgarden 🌱</h1>
+<h1 align="center">Meshgarden</h1>
 
-**A tiny, polite LoRa BBS and network observatory. MeshCore-first, Meshtastic supported.**
+<p align="center"><strong>A small LoRa BBS and network observatory. MeshCore first, Meshtastic supported.</strong></p>
 
 <p align="center">
   <a href="https://github.com/gdamdam/meshgarden/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/gdamdam/meshgarden/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="version 1.10.0" src="https://img.shields.io/badge/version-1.10.0-blue.svg">
-  <img alt="License: GPL-3.0" src="https://img.shields.io/badge/License-GPL--3.0-blue.svg">
-  <img alt="Python 3.11+ (3.13 tested)" src="https://img.shields.io/badge/python-3.11%2B%20(3.13%20tested)-blue.svg">
-  <img alt="MeshCore focused" src="https://img.shields.io/badge/MeshCore-focused-green.svg">
-  <img alt="Meshtastic supported" src="https://img.shields.io/badge/Meshtastic-supported-orange.svg">
-  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-yellow.svg">
+  <img alt="version 1.10.0" src="https://img.shields.io/badge/version-1.10.0-blue">
+  <a href="LICENSE"><img alt="GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-green"></a>
 </p>
 
 One Raspberry Pi, one radio. Visitors DM the node to sign the guestbook, post on boards, send
@@ -30,33 +26,23 @@ node → 🌱 Signed!
 
 > Experimental community service. Not an emergency communication service. No uptime guarantee.
 
-## Contents
+## What it does
 
-- [Highlights](#highlights)
-- [Visitor commands](#visitor-commands)
-- [Quick start](#quick-start)
-- [Operating the garden](#operating-the-garden)
-- [Safety and privacy](#safety-and-privacy)
-- [Project status](#project-status)
-- [Documentation](#documentation)
-- [License](#license)
-- [Development notes](#development-notes)
+Every reply goes back the way the request came: a DM gets a DM. On MeshCore, an optional
+`channel` mode answers a small read-only command set on one public channel, where everyone can
+read both the request and the reply.
 
-## Highlights
+Features and reply-size budgets target a MeshCore companion radio. The same daemon also runs on
+one Meshtastic node.
 
-- **Replies stay in DMs by default.** Every reply goes back the way the request came. A DM gets a DM.
-  On MeshCore, an optional `channel` mode answers a small read-only command set on one public
-  channel, where everyone can read both the request and the reply.
-- **MeshCore-first, not MeshCore-only.** Features and reply-size budgets target a MeshCore
-  companion radio. The same daemon also runs on one Meshtastic node.
-- **A whole BBS in one-packet DMs.** Guestbook, topic boards, mailbox with memorable aliases,
-  two games (BOOK, WORDLE), and daily draws (ICHING, HAIKU).
-- **Passive observatory.** Packet metadata, node activity, and signal stats go into SQLite,
-  with a Prometheus endpoint and an optional dashboard. No login, no external assets, loopback
-  by default.
-- **Optional weather warnings.** Relays NWS Warnings and Watches for configured counties as
-  one-line broadcasts on a public MeshCore channel. Off by default. See
-  [configuration](docs/configuration.md#weather-alerts).
+The whole BBS fits in one-packet DMs: guestbook, topic boards, a mailbox with memorable aliases,
+two games (BOOK, WORDLE) and daily draws (ICHING, HAIKU).
+
+Packet metadata, node activity and signal stats go into SQLite, with a Prometheus endpoint and
+an optional dashboard. No login, no external assets, loopback by default.
+
+It can relay NWS Warnings and Watches for configured counties as one-line broadcasts on a public
+MeshCore channel. This is off by default; see [configuration](docs/configuration.md#weather-alerts).
 
 ## Visitor commands
 
@@ -94,16 +80,16 @@ Full reply text, edge cases, and game rules are in [`docs/games.md`](docs/games.
 
 Mail lets visitors leave short notes for each other at the garden, like a shared post box.
 
-- **Sending is open.** Any visitor can send mail by DM. No LAB unlock is needed.
-- **Receiving is opt-in.** You only get notes after you DM `MAIL ON`, and `MAIL OFF` stops them.
-- **Notes wait at the garden.** A note is held on the garden node until the recipient sends
+- Sending is open. Any visitor can send mail by DM. No LAB unlock is needed.
+- Receiving is opt-in. You only get notes after you DM `MAIL ON`, and `MAIL OFF` stops them.
+- Notes wait at the garden. A note is held on the garden node until the recipient sends
   `INBOX`, then deleted once delivery is acknowledged. Uncollected notes expire after 7 days.
   Notes travel over the air as encrypted DMs, but the garden operator's database holds them
   while they wait.
-- **Aliases hide node IDs.** `MAIL ALIAS gardenfox` claims a short name, so others can write to
+- Aliases hide node IDs. `MAIL ALIAS gardenfox` claims a short name, so others can write to
   `@gardenfox` without knowing your node ID. Aliases are 3 to 16 characters and can change once
   a day.
-- **Senders cannot probe for recipients.** The radio offers no list of aliases. A note to an
+- Senders cannot probe for recipients. The radio offers no list of aliases. A note to an
   unknown alias, a mailbox that is off, or a full mailbox all get the same neutral reply as a
   delivered one, so nobody can use mail to discover who is there.
 
@@ -122,16 +108,16 @@ name, which anyone can fake, so every mail command needs a DM.
 
 *Experimental and off by default.* Lets a visitor send their location to the garden by DM.
 
-- **How to share.** Use the MeshCore app's share-location option in a DM to the garden. It sends
+- How to share. Use the MeshCore app's share-location option in a DM to the garden. It sends
   `Saved position: lat, lon` or `GPS position: lat, lon`, and the garden replies once to
   confirm.
-- **What is kept.** Only the coordinates, the sender, and the time. The message text is not
+- What is kept. Only the coordinates, the sender, and the time. The message text is not
   stored.
-- **How long.** Until the operator deletes them with `mgarden positions delete`. There is no
+- How long. Until the operator deletes them with `mgarden positions delete`. There is no
   automatic expiry.
-- **Who sees it.** Only the operator, with `mgarden positions`. Nothing on the radio or the
+- Who sees it. Only the operator, with `mgarden positions`. Nothing on the radio or the
   dashboard reads positions back.
-- **Turning it on.** Set `[observatory] dm_position_capture = true`. While it is off, a
+- Turning it on. Set `[observatory] dm_position_capture = true`. While it is off, a
   location DM gets no reply and nothing is stored.
 
 ### Lab tier
@@ -200,37 +186,37 @@ The test suite never broadcasts. Every transmission is a DM, enforced by a packa
 
 ## Operating the garden
 
-- **CLI.** `mgarden [--config PATH] <subcommand>` covers `status`, `doctor`, moderation
+- The CLI, `mgarden [--config PATH] <subcommand>`, covers `status`, `doctor`, moderation
   (`guestbook`, `block`, `quota`, `mail`, `lab`), `positions`, leaderboards, `backup`, and
   `restore`. Most subcommands take `--json`. Full options and exit codes are in
   [`docs/operations.md`](docs/operations.md).
-- **Configuration.** One TOML file, `/etc/meshgarden/config.toml` on a Raspberry Pi install.
+- Configuration is one TOML file, `/etc/meshgarden/config.toml` on a Raspberry Pi install.
   Start from [`config.example.toml`](config.example.toml).
   Every key and default is in [`docs/configuration.md`](docs/configuration.md).
-- **Dashboard.** A read-only web view of what the daemon observed, disabled by default. Enable
+- The dashboard is a read-only web view of what the daemon observed, disabled by default. Enable
   it with `[web] enabled = true`. `listen` must stay on loopback unless you also set
   `allow_lan = true`, otherwise it refuses to start. See [`docs/dashboard.md`](docs/dashboard.md).
-- **Architecture.** One process with a transport boundary for Meshtastic and MeshCore. See
+- The architecture is one process with a transport boundary for Meshtastic and MeshCore. See
   [`docs/architecture.md`](docs/architecture.md).
 
 ## Safety and privacy
 
-- **Replies stay in DMs.** Meshtastic replies only by DM. MeshCore does the same unless
+- Replies stay in DMs. Meshtastic replies only by DM. MeshCore does the same unless
   `service.mode = "channel"` is set, which posts only the documented read-only subset on a
   public channel that anyone can read.
-- **Bounded retries.** An unacknowledged DM is retried at most three times at 15-second
+- Bounded retries. An unacknowledged DM is retried at most three times at 15-second
   intervals. Channel replies are never retried.
-- **Minimal storage.** `SIGN` and `POST` publish explicitly. Mail bodies are kept only until
+- Minimal storage. `SIGN` and `POST` publish explicitly. Mail bodies are kept only until
   delivered, or 7 days if never delivered. Ordinary DMs, game guesses, and public keys are never
   stored. `run --debug` is the one exception. It prints raw DM text to stderr and a local trace
   file for live troubleshooting, so never use it for an unattended service.
-- **Silent moderation.** A `SIGN` or `POST` caught by the banned-word guard is stored hidden,
+- Silent moderation. A `SIGN` or `POST` caught by the banned-word guard is stored hidden,
   with the same acknowledgement as any other entry.
-- **Quotas with polite notices.** Cooldown and quota refusals get one short private notice,
+- Quotas with polite notices. Cooldown and quota refusals get one short private notice,
   throttled per sender. Notices consume no quota and have no retries.
-- **Names are labels, not identity.** Only the numeric node ID is used for rate limiting,
+- Names are labels, not identity. Only the numeric node ID is used for rate limiting,
   blocking, and dedup. Channel sender names are forgeable.
-- **Packet headers are cleartext mesh-wide.** Sender, recipient, hop count, and timing are
+- Packet headers are cleartext mesh-wide. Sender, recipient, hop count, and timing are
   visible to anyone on the mesh, including public MQTT observers. DM payloads are encrypted, so
   an observer sees that a node talked to the service but not what the DM said. Messages on a
   public channel are readable by everyone.
@@ -239,15 +225,15 @@ The full model is in [`docs/security-and-privacy.md`](docs/security-and-privacy.
 
 ## Project status
 
-**Tested on:** Python 3.13 (requires 3.11+), `meshcore>=2.3.11,<3` (optional extra), Meshtastic
+Tested on Python 3.13 (requires 3.11+), `meshcore>=2.3.11,<3` (optional extra), Meshtastic
 client `2.7.11`. Service radio is a Seeed XIAO ESP32S3 & Wio-SX1262 Kit, visitor radio a Seeed
 Wio Tracker L1 Pro, both on firmware `2.7.26.54e0d8d`. MeshCore is in live field use, but a
 repeatable hardware matrix is still incomplete for both transports.
 
-**Roadmap.** This release is `1.10.0`. Unreleased changes are in `CHANGELOG.md`. Not yet:
+This release is `1.10.0`. Unreleased changes are in `CHANGELOG.md`. Not yet:
 weather correlation on the propagation page, and dual-radio or shared-BBS operation.
 
-**Deliberately out of scope:** AI chatbots, Wikipedia search, emergency data, MQTT bridging, federation,
+Deliberately out of scope: AI chatbots, Wikipedia search, emergency data, MQTT bridging, federation,
 and a traditional BBS web frontend. Channel features stay public, read-only, and bounded.
 `HELP` was retired as the menu word because it can be a genuine distress message.
 
@@ -267,8 +253,3 @@ and a traditional BBS web frontend. Channel features stay public, read-only, and
 ## License
 
 [GPL-3.0-only](LICENSE). Copyright (c) 2026 Meshgarden contributors.
-
-## Development notes
-
-Written by one maintainer with AI assistance (Claude Code). Every change is
-reviewed and tested on real radios before it is merged.
