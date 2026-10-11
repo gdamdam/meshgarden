@@ -186,9 +186,9 @@ def test_readme_has_the_required_title():
     assert "MeshCore-first, Meshtastic supported." in text
 
 
-def test_readme_has_mit_badge():
+def test_readme_has_gpl_badge():
     text = (ROOT / "README.md").read_text()
-    assert "License-MIT" in text
+    assert "License-GPL--3.0" in text
 
 
 def test_hardware_fixtures_never_hold_the_service_device_open():
