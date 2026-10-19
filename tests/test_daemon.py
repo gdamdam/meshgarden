@@ -176,6 +176,16 @@ def test_info_fits_the_byte_budget_and_carries_the_disclaimers():
     assert "menu" in t.lower()
 
 
+def test_info_names_the_other_mesh_only_when_shared():
+    assert "Shared with" not in info_text("Garden")
+    t = info_text("Garden", "MeshCore")
+    assert "🔗 Shared with MeshCore\n" in t
+    assert t.endswith(commands._INFO_SUFFIX.rpartition("\n")[2])
+    assert b(t) <= 180
+    big = info_text("X" * 400, "Meshtastic")
+    assert b(big) == 180 and "uptime" in big
+
+
 def test_info_truncates_only_the_name_when_the_name_is_huge():
     t = info_text("X" * 400)
     assert b(t) <= 180

@@ -251,6 +251,16 @@ content.
 their messages. A node not heard in the last 7 days is deliberately indistinguishable from one
 never seen, because telling them apart would leak more than the mesh already broadcasts.
 
+### Shared garden across meshes
+
+When two daemons share a `bbs.db` (`database.bbs_path`), guestbook entries, board posts, news, mail
+and LAB content you publish are readable from every mesh this garden serves, not only the one you
+used. `SEEN`, `WHO`, `GARDEN` and `RECORD` with a trailing `MC`/`MT` read the other mesh's
+observatory, so `SEEN <node> MC` reveals when that node was last heard on the other mesh (the same
+metadata that mesh already broadcasts). MeshCore ids in shared tables are stored with an `mc:`
+prefix, so a node id on one mesh can never be mistaken for, or impersonate, the same-looking id on
+the other. INFO tells visitors when this sharing is on.
+
 ## Topic boards
 
 **Boards are public by consent, exactly like the guestbook.** `POST <topic> <msg>` is the same

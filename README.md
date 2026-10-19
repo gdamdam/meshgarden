@@ -4,11 +4,11 @@
 
 <p align="center">
   <a href="https://github.com/gdamdam/meshgarden/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/gdamdam/meshgarden/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="version 1.10.0" src="https://img.shields.io/badge/version-1.10.0-blue">
+  <img alt="version 1.11.0" src="https://img.shields.io/badge/version-1.11.0-blue">
   <a href="LICENSE"><img alt="GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-green"></a>
 </p>
 
-One Raspberry Pi, one radio. Visitors DM the node to sign the guestbook, post on boards, send
+One Raspberry Pi, one radio (or two, a Meshtastic and a MeshCore daemon can share one garden). Visitors DM the node to sign the guestbook, post on boards, send
 mail, play daily games, or check their signal. The node logs packet metadata, never message
 text, and serves a local read-only dashboard.
 

@@ -1354,7 +1354,7 @@ def knock_text() -> str:
     return _KNOCK_TEXT
 
 
-def info_text(service_name: str) -> str:
+def info_text(service_name: str, shared_with: str | None = None) -> str:
     """<= 180 UTF-8 bytes, multi-line. Names the operator-configured service,
     states that SIGN publishes, points to MENU for the full command list,
     and carries the experimental/no-emergency/no-uptime disclaimer --
@@ -1362,14 +1362,23 @@ def info_text(service_name: str) -> str:
     experimental · not for emergencies · no uptime guarantee".
     If the full text would exceed the budget, only the service name is
     truncated (on a UTF-8 boundary) so the leading emoji and the fixed
-    suffix always survive."""
+    suffix always survive.
+
+    `shared_with` (the OTHER mesh's label, only when a shared bbs file is in
+    use) adds one line before the disclaimer, so visitors learn their posts
+    and mail are readable from the other mesh; the name budget shrinks to
+    match."""
+    suffix = _INFO_SUFFIX
+    if shared_with:
+        head, _, tail = suffix.rpartition("\n")
+        suffix = f"{head}\n🔗 Shared with {shared_with}\n{tail}"
     max_name_bytes = (
         _MAX_RESPONSE_BYTES
         - len(_GARDEN_EMOJI_PREFIX.encode("utf-8"))
-        - len(_INFO_SUFFIX.encode("utf-8"))
+        - len(suffix.encode("utf-8"))
     )
     name = _truncate_utf8(service_name, max_name_bytes)
-    return _GARDEN_EMOJI_PREFIX + name + _INFO_SUFFIX
+    return _GARDEN_EMOJI_PREFIX + name + suffix
 
 
 def version_text(version: str) -> str:

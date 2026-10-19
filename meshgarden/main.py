@@ -2856,7 +2856,10 @@ class Daemon:
         if command == Command.NOT_EMERGENCY:
             return not_emergency_text(max_bytes=self._transport.max_text_bytes)
         if command == Command.INFO:
-            return info_text(self.cfg.service.name)
+            shared_with = None
+            if self.cfg.database.resolved_bbs_path is not None:
+                shared_with = _MESH_LABELS[self._peer_transport_name()]
+            return info_text(self.cfg.service.name, shared_with)
         if command == Command.STATS:
             return format_stats(
                 senders_24h=self._collector.distinct_senders_since(now - 86400),

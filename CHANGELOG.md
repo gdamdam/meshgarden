@@ -9,6 +9,42 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-19
+
+### Added
+
+- Shared-garden bridge: a Meshtastic daemon and a MeshCore daemon share
+  guestbook, boards, news, mail, games, LAB and blocks through an attached
+  `bbs.db` (opt-in `database.bbs_path`). Each daemon keeps its own
+  observatory. `meshgarden@<instance>` systemd template and
+  `install-rpi.sh --instance` run a second daemon on one host.
+- Cross-mesh MAIL: an explicit `mc:`/`mt:` prefix, or a name/id resolved on
+  the other mesh.
+- `WHO`/`GARDEN`/`RECORD`/`SEEN` accept a trailing `MC`/`MT` to read the
+  other mesh's observatory (`database.peer_path`).
+- One dashboard for both meshes: `?mesh=mt|mc|both`.
+- `INFO` adds a "Shared with <other mesh>" line when `bbs_path` is set.
+
+### Changed
+
+- `backup`, `restore` and `doctor` cover `bbs.db`.
+
+### Upgrade
+
+- Sharing is opt-in via `database.bbs_path`. Without it nothing changes.
+- Setting it moves the BBS tables into `bbs.db` on next start
+  (automatic, with verified row counts).
+- MeshCore ids in moved rows become `mc:!...`.
+- A MeshCore player's same-day wordle/book state resets once.
+- Rolling back to 1.10 requires restoring the pre-upgrade backup. Stop both
+  daemons before restoring `bbs.db`.
+- Developer note: future schema changes to BBS tables need a bbs-side
+  migration.
+- This is a minor bump by operator decision despite the storage layout
+  change.
+
+### Also in this release
+
 - Add `mgarden positions delete` to remove shared DM positions by id
   (`delete 12 15`), id range (`--range 10-20`), node (`--node`) or local
   date range (`--from`/`--to`, inclusive). Filters combine with AND and at
