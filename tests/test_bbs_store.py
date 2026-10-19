@@ -39,7 +39,7 @@ def _legacy(path, *, guestbook=(), mail=(), lab=(), blocked=()):
 
 
 def _split(main_path, bbs_path, transport="meshtastic"):
-    conn = connect(main_path, bbs_path=bbs_path)
+    conn = connect(main_path, bbs_path=bbs_path, transport="meshtastic")
     migrate(conn, transport=transport)
     return conn
 
@@ -96,7 +96,7 @@ def test_crash_after_copy_before_drop_resumes_without_duplicates(paths):
     main_path, bbs_path = paths
     _legacy(main_path, guestbook=["!a1d3db88", "!0000beef"])
     # Replay ensure_split up to the copy commit of guestbook, then "crash".
-    conn = connect(main_path, bbs_path=bbs_path)
+    conn = connect(main_path, bbs_path=bbs_path, transport="meshtastic")
     with bbs_store._immediate(conn):
         bbs_store._create_schema(conn)
     instance_id = bbs_store._instance_id(conn)
@@ -129,7 +129,7 @@ def test_second_instance_nonempty_legacy_conflict_raises(tmp_path):
     _legacy(a, guestbook=["!a1d3db88"])
     _split(a, bbs_path).close()
     _legacy(b, guestbook=["!e4d495e4"])
-    conn = connect(b, bbs_path=bbs_path)
+    conn = connect(b, bbs_path=bbs_path, transport="meshtastic")
     with pytest.raises(SplitConflict) as exc:
         migrate(conn, transport="meshcore")
     assert b in str(exc.value) and bbs_path in str(exc.value)
@@ -160,14 +160,14 @@ def test_readonly_attach_sees_bbs_rows(paths):
     main_path, bbs_path = paths
     _legacy(main_path, guestbook=["!a1d3db88"])
     _split(main_path, bbs_path).close()
-    conn = connect(main_path, read_only=True, bbs_path=bbs_path)
+    conn = connect(main_path, read_only=True, bbs_path=bbs_path, transport="meshtastic")
     assert conn.execute("SELECT sender_node_id FROM guestbook").fetchone()[0] == "!a1d3db88"
     with pytest.raises(sqlite3.OperationalError):
         conn.execute("INSERT INTO guestbook(created_at, sender_node_id, message, message_hash) "
                      "VALUES (1, '!x', 'm', 'h')")
     conn.close()
     with pytest.raises(sqlite3.OperationalError):
-        connect(main_path, read_only=True, bbs_path=bbs_path + ".missing")
+        connect(main_path, read_only=True, bbs_path=bbs_path + ".missing", transport="meshtastic")
 
 
 def test_mail_id_sequence_not_reused_after_split(paths):
@@ -203,7 +203,7 @@ def test_conflict_in_later_table_moves_nothing(tmp_path):
     _split(a, bbs_path).close()
     # b's guestbook alone would move cleanly; only blocked_senders conflicts.
     _legacy(b, guestbook=["!e4d495e4"], blocked=["!a1d3db88"])
-    conn = connect(b, bbs_path=bbs_path)
+    conn = connect(b, bbs_path=bbs_path, transport="meshtastic")
     with pytest.raises(SplitConflict, match="blocked_senders"):
         migrate(conn)
     assert set(BBS_TABLES) <= _names(conn, "main")

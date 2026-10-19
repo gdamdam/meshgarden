@@ -223,7 +223,16 @@ def cmd_export(
 def cmd_restore(
     cfg: Config, backup_path: str, *, overwrite: bool = False, yes: bool = False
 ) -> int:
+    # A bbs-*.db backup goes to the shared file, anything else to main.
     target = cfg.database.path
+    if ops.backup_kind(backup_path) == "bbs":
+        if cfg.database.resolved_bbs_path is None:
+            print(
+                "error: this is a shared BBS backup but database.bbs_path is not configured",
+                file=sys.stderr,
+            )
+            return 1
+        target = cfg.database.resolved_bbs_path
     if os.path.exists(target) and not yes:
         print(
             f"error: target database already exists: {target} (use --yes to confirm restore)",
@@ -233,7 +242,9 @@ def cmd_restore(
 
     # Once the operator has confirmed overwriting the target (--yes), actually
     # let restore_backup overwrite it -- otherwise it refuses again below.
-    report = ops.restore_backup(backup_path, target, overwrite=overwrite or yes)
+    report = ops.restore_backup(
+        backup_path, target, overwrite=overwrite or yes, bbs_path=cfg.database.resolved_bbs_path
+    )
     for key, value in asdict(report).items():
         print(f"{key}: {value}")
     return 0 if report.ok else 1

@@ -91,14 +91,13 @@ def typed_node_id(text: str, transport: str, *, shared: bool) -> str | None:
     """Stored form of a typed node id (operator CLI, MAIL recipient), or None.
 
     A bare id means the config's own transport. Without a shared bbs file
-    nothing is qualified, and an id naming the other mesh is meaningless
-    (that mesh has no rows here), so it is rejected rather than silently
-    matched against this mesh's bare ids."""
+    nothing is qualified and `mc:`/`mt:` prefixes are not accepted at all."""
+    if not shared:
+        # Prefixes only exist with a shared file; single-file parsing is
+        # the plain node-id rule, so "mc:!x" is invalid there as before.
+        return parse_node_id_argument(text)
     try:
         prefix_transport, node_id = parse_qualified_argument(text)
     except ValueError:
         return None
-    owner = prefix_transport or transport
-    if not shared:
-        return node_id if owner == transport else None
-    return qualify(node_id, owner)
+    return qualify(node_id, prefix_transport or transport)

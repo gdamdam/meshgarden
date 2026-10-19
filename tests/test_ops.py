@@ -1222,3 +1222,96 @@ def test_follow_file_stops_within_one_poll(tmp_path):
     elapsed = time.monotonic() - start
 
     assert elapsed < 1.0  # nowhere near the 5s poll interval
+
+
+# --- shared bbs.db -----------------------------------------------------------
+
+
+def _shared_cfg(tmp_path, peer=""):
+    cfg = _cfg(tmp_path)
+    return replace(
+        cfg, database=replace(
+            cfg.database, bbs_path=str(tmp_path / "bbs.db"), peer_path=peer))
+
+
+def _shared_db(tmp_path):
+    conn = connect(str(tmp_path / "o.db"), bbs_path=str(tmp_path / "bbs.db"),
+                   transport="meshtastic")
+    migrate(conn)
+    return conn
+
+
+def _at_rest_copy(src, dest):
+    # Rollback-journal copy: restore opens the backup mode=ro, which a WAL
+    # file without its -shm cannot do.
+    shutil.copy(src, dest)
+    conn = sqlite3.connect(dest)
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+
+
+def test_restore_bbs_backup(tmp_path):
+    conn = _shared_db(tmp_path)
+    _insert(conn, created_at=1, message="kept")
+    conn.close()
+    backup = str(tmp_path / "bbs-copy.db")
+    _at_rest_copy(tmp_path / "bbs.db", backup)
+    assert ops.backup_kind(backup) == "bbs"
+
+    target = str(tmp_path / "restored-bbs.db")
+    report = ops.restore_backup(backup, target)
+
+    assert report.ok, report.error
+    assert report.guestbook_row_count == 1
+
+
+def test_restore_main_backup_of_split_install(tmp_path):
+    conn = _shared_db(tmp_path)
+    conn.close()
+    backup = str(tmp_path / "observatory-copy.db")
+    _at_rest_copy(tmp_path / "o.db", backup)
+    report = ops.restore_backup(backup, str(tmp_path / "r.db"))
+    assert report.ok, report.error
+    assert report.guestbook_row_count is None
+
+
+def test_restore_legacy_backup_refused_when_bbs_has_rows(tmp_path):
+    legacy = _make_backup_file(tmp_path, "legacy.db", rows=1)
+    conn = _shared_db(tmp_path)
+    _insert(conn, created_at=1, message="already shared")
+    conn.close()
+    report = ops.restore_backup(
+        legacy, str(tmp_path / "r.db"), bbs_path=str(tmp_path / "bbs.db"))
+    assert report.ok is False
+    assert "SplitConflict" in report.error
+    assert not os.path.exists(tmp_path / "r.db")
+
+
+def test_doctor_reports_bbs_checks(tmp_path):
+    _shared_db(tmp_path).close()
+    checks = {c.name: c for c in ops.doctor(_shared_cfg(tmp_path), now=1_700_000_000)}
+    assert checks["bbs_integrity"].ok is True
+    assert checks["bbs_schema_version"].ok is True
+    # Same instance's own bbs file is not a peer, and no peer is configured.
+    assert checks["peer_observatory"].detail == "not configured"
+
+
+def test_doctor_peer_not_configured_ok(tmp_path):
+    _shared_db(tmp_path).close()
+    check = ops._check_peer_observatory(_shared_cfg(tmp_path))
+    assert check.ok is True and check.detail == "not configured"
+
+
+def test_doctor_peer_same_instance_warns(tmp_path):
+    from meshgarden.bbs_store import _instance_id
+
+    conn = _shared_db(tmp_path)
+    _instance_id(conn)
+    conn.close()
+    check = ops._check_peer_observatory(_shared_cfg(tmp_path, peer=str(tmp_path / "o.db")))
+    assert check.ok is False and check.detail.startswith("WARN")
+
+
+def test_doctor_single_file_has_no_bbs_checks(tmp_path):
+    names = [c.name for c in ops.doctor(_cfg(tmp_path), now=1_700_000_000)]
+    assert not any(n.startswith("bbs_") or n == "peer_observatory" for n in names)

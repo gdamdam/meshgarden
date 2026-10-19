@@ -356,3 +356,42 @@ def test_last_backup_accessors_are_read_only_and_track_state(tmp_path):
     assert r.last_backup_error is None
     with pytest.raises(AttributeError):
         r.last_backup_at = 5
+
+
+# --- shared bbs.db -----------------------------------------------------------
+
+def mk_shared(tmp_path, keep=7):
+    conn = connect(str(tmp_path / "o.db"), bbs_path=str(tmp_path / "bbs.db"),
+                   transport="meshtastic")
+    migrate(conn)
+    b = BackupConfig(directory=str(tmp_path / "backups"), interval_hours=24, keep=keep)
+    return conn, Retention(conn, RetentionConfig(), b, log_dir=str(tmp_path / "logs"))
+
+def test_backup_writes_both_files(tmp_path):
+    conn, r = mk_shared(tmp_path)
+    conn.execute("INSERT INTO guestbook(created_at,sender_node_id,message,message_hash)"
+                 " VALUES (1,'!a','hi','h')"); conn.commit()
+    path = r.backup(1_700_000_000)
+    assert os.path.basename(path).startswith("observatory-")
+    names = sorted(os.listdir(tmp_path / "backups"))
+    assert [n.split("-")[0] for n in names] == ["bbs", "observatory"]
+    assert not any(n.endswith(".tmp") for n in names)
+    bbs_copy = sqlite3.connect(str(tmp_path / "backups" / names[0]))
+    assert bbs_copy.execute("SELECT message FROM guestbook").fetchone()[0] == "hi"
+    main_copy = sqlite3.connect(path)
+    assert main_copy.execute("SELECT count(*) FROM sqlite_master WHERE name='guestbook'"
+                             ).fetchone()[0] == 0
+
+def test_rotate_keeps_each_prefix(tmp_path):
+    conn, r = mk_shared(tmp_path, keep=2)
+    for i in range(4):
+        assert r.backup(1_700_000_000 + i * 86400) is not None
+    names = sorted(os.listdir(tmp_path / "backups"))
+    assert [n.split("-")[0] for n in names] == ["bbs", "bbs", "observatory", "observatory"]
+
+def test_storage_report_includes_bbs(tmp_path):
+    conn, r = mk_shared(tmp_path)
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    expected = sum(os.path.getsize(p) for p in (tmp_path / "o.db", tmp_path / "bbs.db"))
+    assert r.storage_report().db_bytes >= expected
+    assert os.path.getsize(tmp_path / "bbs.db") > 0

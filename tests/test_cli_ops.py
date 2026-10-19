@@ -1310,3 +1310,21 @@ def test_config_sync_prints_note_for_skipped_nested_table(tmp_path, capsys):
     assert rc == 0
     err = capsys.readouterr().err
     assert "note: skipped nested table service.limits" in err
+
+
+def test_db_stats_lists_bbs_tables_under_heading(tmp_path, capsys):
+    cfgpath = tmp_path / "config.toml"
+    cfgpath.write_text(
+        CONFIG.format(db=tmp_path / "o.db", bk=tmp_path / "backups").replace(
+            "[backup]", f'bbs_path = "{tmp_path / "bbs.db"}"\n[backup]')
+    )
+    conn = connect(str(tmp_path / "o.db"), bbs_path=str(tmp_path / "bbs.db"),
+                   transport="meshtastic")
+    migrate(conn, transport="meshtastic")
+    conn.close()
+
+    assert main(["--config", str(cfgpath), "db-stats"]) == 0
+    out = capsys.readouterr().out
+    head, _, tail = out.partition("bbs:\n")
+    assert "observations: 0" in head and "guestbook" not in head
+    assert "  guestbook: 0" in tail and "  blocked_senders: 0" in tail

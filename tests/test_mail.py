@@ -175,3 +175,16 @@ def test_meshtastic_guestbook_never_names_an_mc_entry_from_its_nodes(shared_daem
     from meshgarden.guestbook import lookup_bbs_node_name
     assert lookup_bbs_node_name(d.conn, "mc:!a1d3db88") is None
     assert lookup_bbs_node_name(d.conn, "!a1d3db88") == "Evil"
+
+
+def test_single_file_mail_ignores_transport_prefix(daemon, monkeypatch):
+    """Without a shared bbs file `mc:` is not a prefix: the argument is
+    parsed as before and, being no node id, the MAIL is dropped."""
+    from meshgarden import bbs_ids
+
+    def boom(*a, **k):
+        raise AssertionError("prefix branch taken in single-file mode")
+
+    monkeypatch.setattr(bbs_ids, "typed_node_id", boom)
+    _dm(daemon, "MAIL mc:!ffeeddcc hello", 9510)
+    assert daemon.conn.execute("SELECT count(*) FROM mail").fetchone()[0] == 0

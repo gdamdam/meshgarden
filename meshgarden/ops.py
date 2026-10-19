@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from meshgarden.bbs_store import BBS_SCHEMA_VERSION, BBS_TABLES
 from meshgarden.config import NODE_ID_RE
 from meshgarden.database import SCHEMA_VERSION
 from meshgarden.guestbook import clean_display_name
@@ -222,19 +223,50 @@ def _fail(
     )
 
 
-# Tables created by migration 1 -- present in every schema version this app
-# has ever shipped (SCHEMA_VERSION >= 1). An unrelated-but-valid sqlite file
-# (some other app's database, or a backup taken before migration 1) passes
-# `PRAGMA integrity_check` without ever containing these; checking for them
-# up front is what tells the two apart before anything is copied.
-_REQUIRED_SOURCE_TABLES = (
+# Tables created by migration 1 that stay in the per-instance file -- present
+# in every schema version this app has ever shipped (SCHEMA_VERSION >= 1). An
+# unrelated-but-valid sqlite file (some other app's database, or a backup
+# taken before migration 1) passes `PRAGMA integrity_check` without ever
+# containing these; checking for them up front is what tells the two apart
+# before anything is copied. A legacy single-file backup also carries the BBS
+# tables, a split instance's main does not, so those are not required here.
+_REQUIRED_MAIN_TABLES = (
     "nodes",
     "observations",
-    "guestbook",
     "processed_requests",
     "daily_stats",
-    "blocked_senders",
 )
+_REQUIRED_BBS_TABLES = (*BBS_TABLES, "bbs_meta")
+
+
+def _backup_kind(tables: set[str]) -> str | None:
+    """"main" (observatory file, legacy single-file ones included), "bbs"
+    (shared BBS file) or None. `observations` decides: a legacy backup holds
+    both `observations` and `guestbook`, and restores as main."""
+    if "observations" in tables:
+        return "main"
+    if "guestbook" in tables:
+        return "bbs"
+    return None
+
+
+def backup_kind(path: str) -> str | None:
+    """Kind of the backup file at `path` (see `_backup_kind`), None when it
+    cannot be read or is neither."""
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            return _backup_kind(_table_names(conn))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    return {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
 
 
 def _validate_source_schema(source: sqlite3.Connection) -> str | None:
@@ -246,29 +278,59 @@ def _validate_source_schema(source: sqlite3.Connection) -> str | None:
     unrelated-but-valid sqlite file must be caught here rather than
     discovered only after it has already replaced the target.
     """
+    existing = _table_names(source)
+    kind = _backup_kind(existing)
+    # An unrecognized file is reported against the main tables, the common case.
+    required, newest = (
+        (_REQUIRED_BBS_TABLES, BBS_SCHEMA_VERSION)
+        if kind == "bbs"
+        else (_REQUIRED_MAIN_TABLES, SCHEMA_VERSION)
+    )
     user_version = source.execute("PRAGMA user_version").fetchone()[0]
-    if not (1 <= user_version <= SCHEMA_VERSION):
+    if not (1 <= user_version <= newest):
         return (
             f"unsupported schema version: user_version={user_version} "
-            f"(expected 1..{SCHEMA_VERSION})"
+            f"(expected 1..{newest})"
         )
-    existing = {
-        row[0]
-        for row in source.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-    }
-    missing = sorted(set(_REQUIRED_SOURCE_TABLES) - existing)
+    missing = sorted(set(required) - existing)
     if missing:
         return f"backup is missing required table(s): {missing}"
     return None
 
 
+def _bbs_rows_in(path: str) -> list[str]:
+    """BBS tables of the shared file at `path` that hold rows ([] when the
+    file is missing or empty)."""
+    if not os.path.exists(path):
+        return []
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        present = _table_names(conn)
+        return [
+            t
+            for t in BBS_TABLES
+            if t in present and conn.execute(f"SELECT 1 FROM {t} LIMIT 1").fetchone()
+        ]
+    finally:
+        conn.close()
+
+
 def restore_backup(
-    backup_path: str, target_db_path: str, *, overwrite: bool = False
+    backup_path: str,
+    target_db_path: str,
+    *,
+    overwrite: bool = False,
+    bbs_path: str | None = None,
 ) -> RestoreReport:
     """Restores `backup_path` (an on-disk sqlite file, e.g. one produced by
     `retention.Retention.backup`) to `target_db_path`.
+
+    Restores whichever kind the file is (see `backup_kind`): the caller picks
+    `target_db_path` accordingly (main file or the shared bbs file). A legacy
+    single-file backup restores as main even into a split install; the next
+    daemon start re-runs `bbs_store.ensure_split` to move its BBS tables out.
+    With `bbs_path` (the configured shared file) such a restore is refused
+    when that file already holds BBS rows, since the split would conflict.
 
     Refuses (returning a not-`ok` report, never raising for an expected
     refusal) when:
@@ -367,7 +429,23 @@ def restore_backup(
             return _fail(backup_path, target_db_path, schema_error)
 
         backup_user_version = source.execute("PRAGMA user_version").fetchone()[0]
-        source_guestbook_count = source.execute("SELECT COUNT(*) FROM guestbook").fetchone()[0]
+        # A split instance's main backup has no guestbook: nothing to compare.
+        has_guestbook = "guestbook" in _table_names(source)
+        source_guestbook_count = (
+            source.execute("SELECT COUNT(*) FROM guestbook").fetchone()[0]
+            if has_guestbook
+            else None
+        )
+        if has_guestbook and bbs_path and backup_kind(backup_path) == "main":
+            conflicts = _bbs_rows_in(bbs_path)
+            if conflicts:
+                return _fail(
+                    backup_path,
+                    target_db_path,
+                    f"legacy single-file backup would bring {', '.join(conflicts)} into "
+                    f"shared BBS file {bbs_path}, which already holds rows (SplitConflict); "
+                    "restore a bbs-*.db backup instead or empty the shared file",
+                )
 
         # Guarded like the copy step below: a failure here (e.g. the
         # target's directory can't be created, or the filesystem refuses
@@ -417,7 +495,11 @@ def restore_backup(
     try:
         tmp_target = sqlite3.connect(tmp_dest)
         try:
-            tmp_guestbook_count = tmp_target.execute("SELECT COUNT(*) FROM guestbook").fetchone()[0]
+            tmp_guestbook_count = (
+                tmp_target.execute("SELECT COUNT(*) FROM guestbook").fetchone()[0]
+                if has_guestbook
+                else None
+            )
         finally:
             tmp_target.close()
 
@@ -525,7 +607,10 @@ def restore_backup(
     try:
         target = sqlite3.connect(target_db_path)
         try:
-            target_guestbook_count = target.execute("SELECT COUNT(*) FROM guestbook").fetchone()[0]
+            if has_guestbook:
+                target_guestbook_count = target.execute(
+                    "SELECT COUNT(*) FROM guestbook"
+                ).fetchone()[0]
         finally:
             target.close()
     except Exception as exc:
@@ -625,42 +710,76 @@ def _check_db_dir(db_dir: str) -> Check:
     return Check("database_dir", True, f"{db_dir}: exists and writable")
 
 
-def _check_db_integrity(db_path: str) -> Check:
+def _check_db_integrity(db_path: str, name: str = "database_integrity") -> Check:
     if not os.path.exists(db_path):
-        return Check("database_integrity", True, "database not yet created")
+        return Check(name, True, "database not yet created")
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     except sqlite3.OperationalError as exc:
-        return Check("database_integrity", False, f"cannot open database: {exc}")
+        return Check(name, False, f"cannot open database: {exc}")
     try:
         try:
             result = conn.execute("PRAGMA quick_check").fetchone()[0]
         except sqlite3.DatabaseError as exc:
-            return Check("database_integrity", False, f"quick_check failed: {exc}")
+            return Check(name, False, f"quick_check failed: {exc}")
     finally:
         conn.close()
     if result != "ok":
-        return Check("database_integrity", False, f"quick_check: {result}")
-    return Check("database_integrity", True, "quick_check: ok")
+        return Check(name, False, f"quick_check: {result}")
+    return Check(name, True, "quick_check: ok")
 
 
-def _check_schema_version(db_path: str) -> Check:
+def _check_schema_version(
+    db_path: str, name: str = "schema_version", expected: int = SCHEMA_VERSION
+) -> Check:
     if not os.path.exists(db_path):
-        return Check("schema_version", True, "database not yet created")
+        return Check(name, True, "database not yet created")
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     except sqlite3.Error as exc:
-        return Check("schema_version", False, f"unreadable: {exc}")
+        return Check(name, False, f"unreadable: {exc}")
     try:
         try:
             actual = conn.execute("PRAGMA user_version").fetchone()[0]
         except sqlite3.Error as exc:
-            return Check("schema_version", False, f"unreadable: {exc}")
+            return Check(name, False, f"unreadable: {exc}")
     finally:
         conn.close()
-    if actual != SCHEMA_VERSION:
-        return Check("schema_version", False, f"user_version={actual} expected={SCHEMA_VERSION}")
-    return Check("schema_version", True, f"user_version={actual}")
+    if actual != expected:
+        return Check(name, False, f"user_version={actual} expected={expected}")
+    return Check(name, True, f"user_version={actual}")
+
+
+def _check_peer_observatory(cfg: Config) -> Check:
+    """Readable peer observatory, or "not configured". A peer whose
+    `instance_id` equals ours is this very file: the peer view would then
+    show our own mesh as the other one."""
+    peer = cfg.database.peer_path
+    if not peer:
+        return Check("peer_observatory", True, "not configured")
+    if not os.path.exists(peer):
+        return Check("peer_observatory", False, f"{peer}: not found")
+
+    def instance_id(path: str) -> str | None:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT value FROM daemon_state WHERE key = 'instance_id'"
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    try:
+        theirs = instance_id(peer)
+        ours = instance_id(cfg.database.path) if os.path.exists(cfg.database.path) else None
+    except sqlite3.Error as exc:
+        return Check("peer_observatory", False, f"{peer}: unreadable: {exc}")
+    if theirs is not None and theirs == ours:
+        return Check(
+            "peer_observatory", False, f"WARN: {peer} has this instance's own instance_id"
+        )
+    return Check("peer_observatory", True, f"{peer}: readable")
 
 
 def _check_disk_headroom(db_dir: str, retention: RetentionConfig) -> Check:
@@ -813,6 +932,17 @@ def doctor(cfg: Config, *, now: int) -> list[Check]:
     the database, never binds a socket it doesn't immediately close."""
     db_dir = _database_dir(cfg)
     status_file_check = _check_status_file(db_dir, now)
+    # Shared-BBS checks exist only with a bbs file, so single-file installs
+    # keep today's exact check list.
+    bbs_checks = (
+        [
+            _check_db_integrity(bbs, "bbs_integrity"),
+            _check_schema_version(bbs, "bbs_schema_version", BBS_SCHEMA_VERSION),
+            _check_peer_observatory(cfg),
+        ]
+        if (bbs := cfg.database.resolved_bbs_path)
+        else []
+    )
     return [
         _check_identity(cfg),
         _check_device(cfg.radio.device),
@@ -820,6 +950,7 @@ def doctor(cfg: Config, *, now: int) -> list[Check]:
         _check_db_dir(db_dir),
         _check_db_integrity(cfg.database.path),
         _check_schema_version(cfg.database.path),
+        *bbs_checks,
         _check_disk_headroom(db_dir, cfg.retention),
         _check_backup_dir(cfg.backup),
         _check_backup_age(cfg.backup, now),

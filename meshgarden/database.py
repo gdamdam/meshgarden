@@ -438,7 +438,7 @@ def connect(
     *,
     read_only: bool = False,
     bbs_path: str | None = None,
-    transport: str = "meshtastic",
+    transport: str | None = None,
 ) -> sqlite3.Connection:
     """Open a connection with WAL mode and the pragmas the daemon and CLI both need.
 
@@ -456,8 +456,13 @@ def connect(
     None keeps the legacy single-file layout. A read-only attach of a
     missing file raises sqlite3.OperationalError, same as a missing main.
     `transport` is the config's own mesh, which decides which stored BBS ids
-    `bbs_ids.LOCAL_ID_SQL` maps onto this file's `nodes`.
+    `bbs_ids.LOCAL_ID_SQL` maps onto this file's `nodes`. It is required
+    with `bbs_path` (no default: a wrong mesh would silently qualify or
+    match the wrong ids) and defaults to "meshtastic" in single-file mode.
     """
+    if bbs_path and transport is None:
+        raise ValueError("connect(bbs_path=...) requires an explicit transport")
+    transport = transport or "meshtastic"
     if read_only:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     else:

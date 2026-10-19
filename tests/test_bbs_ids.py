@@ -44,6 +44,8 @@ def test_typed_node_id_respects_the_shared_switch():
     assert op("mc:!e4d495e4", "meshtastic", shared=True) == "mc:!e4d495e4"
     # Single-file install: ids stay bare, and the other mesh has no rows.
     assert op("!e4d495e4", "meshcore", shared=False) == "!e4d495e4"
-    assert op("mc:!e4d495e4", "meshcore", shared=False) == "!e4d495e4"
+    # Prefixes are a shared-file feature: single-file parsing is unchanged.
+    assert op("mc:!e4d495e4", "meshcore", shared=False) is None
     assert op("mc:!e4d495e4", "meshtastic", shared=False) is None
+    assert op("mt:!e4d495e4", "meshtastic", shared=False) is None
     assert op("bogus", "meshtastic", shared=True) is None

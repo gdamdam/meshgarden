@@ -137,6 +137,11 @@ class Retention:
 
         row = conn.execute("PRAGMA database_list").fetchone()
         self._db_path = row["file"] if row is not None else ""
+        # Shared BBS file (bbs_store): its size counts against the cap and it
+        # is backed up on its own connection, so empty means single-file mode.
+        self._bbs_path = next(
+            (r["file"] for r in conn.execute("PRAGMA database_list") if r["name"] == "bbs"), ""
+        )
 
     @property
     def last_backup_at(self) -> int | None:
@@ -436,10 +441,11 @@ class Retention:
         logger.info("retention: rolled up daily_stats day=%s", day)
 
     def storage_report(self) -> StorageReport:
-        db_bytes = (
-            _file_size(self._db_path)
-            + _file_size(self._db_path + "-wal")
-            + _file_size(self._db_path + "-shm")
+        db_bytes = sum(
+            _file_size(path + suffix)
+            for path in (self._db_path, self._bbs_path)
+            if path
+            for suffix in ("", "-wal", "-shm")
         )
         backup_bytes = _dir_size(self._backup.directory)
         log_bytes = _dir_size(self._log_dir) if self._log_dir else 0
@@ -468,7 +474,11 @@ class Retention:
     def _expected_backup_size(self) -> int:
         """Rough size of the copy `backup()` is about to write: the current
         db file plus its WAL (the pages `Connection.backup()` will copy)."""
-        return _file_size(self._db_path) + _file_size(self._db_path + "-wal")
+        return sum(
+            _file_size(path) + _file_size(path + "-wal")
+            for path in (self._db_path, self._bbs_path)
+            if path
+        )
 
     def _preflight_backup_check(self) -> str | None:
         """Refuses to start a backup that would itself blow the storage cap
@@ -503,24 +513,40 @@ class Retention:
             logger.warning("retention: backup refused reason=%s", reason)
             return None
 
-        final_name = time.strftime("observatory-%Y%m%dT%H%M%SZ.db", time.gmtime(now))
-        dest = os.path.join(self._backup.directory, final_name)
-        tmp_dest = dest + ".tmp"
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now))
+        dest = os.path.join(self._backup.directory, f"observatory-{stamp}.db")
+        # bbs-<ts>.db shares the timestamp so a restore can pair the two.
+        # Both tmp files are complete before either gets its final name, so
+        # a failure on the second never leaves a lone half of the pair.
+        pairs = [(self._conn, dest)]
+        if self._bbs_path:
+            pairs.append((None, os.path.join(self._backup.directory, f"bbs-{stamp}.db")))
+        finals = [d for _, d in pairs]
 
         try:
-            target = sqlite3.connect(tmp_dest)
-            try:
-                self._conn.backup(target)  # consistent while WAL is active
-            finally:
-                target.close()  # explicit: os.replace must not race an open handle
-            os.chmod(tmp_dest, 0o600)
-            os.replace(tmp_dest, dest)  # atomic: only a complete copy gets the final name
+            for source, final in pairs:
+                tmp_dest = final + ".tmp"
+                # The attached file is backed up from its own connection:
+                # Connection.backup() on the main one would copy only main.
+                src = source or sqlite3.connect(self._bbs_path)
+                target = sqlite3.connect(tmp_dest)
+                try:
+                    src.backup(target)  # consistent while WAL is active
+                finally:
+                    target.close()  # explicit: os.replace must not race an open handle
+                    if source is None:
+                        src.close()
+                os.chmod(tmp_dest, 0o600)
+            for final in finals:
+                # atomic: only a complete copy gets the final name
+                os.replace(final + ".tmp", final)
         except (OSError, sqlite3.Error) as exc:
             self._last_backup_error = type(exc).__name__
             logger.warning("retention: backup failed reason=%s", self._last_backup_error)
-            for partial in (tmp_dest, dest):
-                with contextlib.suppress(FileNotFoundError):
-                    os.remove(partial)
+            for final in finals:
+                for partial in (final + ".tmp", final):
+                    with contextlib.suppress(FileNotFoundError):
+                        os.remove(partial)
             return None
 
         self._rotate_backups()
@@ -530,14 +556,17 @@ class Retention:
         return dest
 
     def _rotate_backups(self) -> None:
-        names = sorted(
-            n
-            for n in os.listdir(self._backup.directory)
-            if n.startswith("observatory-") and not n.endswith(".tmp")
-        )
-        excess = max(0, len(names) - self._backup.keep)
-        for name in names[:excess]:
-            os.remove(os.path.join(self._backup.directory, name))
+        # Each prefix keeps `keep` on its own: pooling them would let one
+        # kind's files evict the other's when only one is being written.
+        for prefix in ("observatory-", "bbs-"):
+            names = sorted(
+                n
+                for n in os.listdir(self._backup.directory)
+                if n.startswith(prefix) and not n.endswith(".tmp")
+            )
+            excess = max(0, len(names) - self._backup.keep)
+            for name in names[:excess]:
+                os.remove(os.path.join(self._backup.directory, name))
 
     def due_for_backup(self, now: int) -> bool:
         if self._last_backup_at is None:

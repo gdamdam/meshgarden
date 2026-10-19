@@ -237,7 +237,13 @@ def test_migration_18_adds_daemon_state_and_helpers_round_trip(tmp_path):
 
 def test_connect_bbs_path_attaches_private_file(tmp_path):
     bbs = tmp_path / "shared" / "bbs.db"
-    conn = connect(str(tmp_path / "o.db"), bbs_path=str(bbs))
+    conn = connect(str(tmp_path / "o.db"), bbs_path=str(bbs), transport="meshtastic")
     assert [r[1] for r in conn.execute("PRAGMA database_list")] == ["main", "bbs"]
     assert os.stat(bbs).st_mode & 0o777 == 0o600
     assert os.stat(bbs.parent).st_mode & 0o777 == 0o700
+
+
+def test_connect_bbs_path_requires_explicit_transport(tmp_path):
+    # A silent "meshtastic" default would mis-qualify a MeshCore config's ids.
+    with pytest.raises(ValueError, match="transport"):
+        connect(str(tmp_path / "o.db"), bbs_path=str(tmp_path / "bbs.db"))

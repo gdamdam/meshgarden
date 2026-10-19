@@ -3932,12 +3932,16 @@ class Daemon:
             # acknowledgement path as an opted-out/full mailbox. This prevents
             # MAIL from becoming an alias-enumeration oracle.
             recipient = self._mail_aliases.resolve(alias)
-        elif bbs_ids.has_transport_prefix(node_raw):
+        elif (
+            self.cfg.database.resolved_bbs_path is not None
+            and bbs_ids.has_transport_prefix(node_raw)
+        ):
             # An explicit mesh prefix names the recipient exactly: no lookup,
             # since this mesh's node table cannot vouch for the other mesh.
+            # Only with a shared bbs file: single-file installs parse MAIL
+            # recipients exactly as before the prefixes existed.
             recipient = bbs_ids.typed_node_id(
-                node_raw, self.cfg.radio.transport,
-                shared=self.cfg.database.resolved_bbs_path is not None,
+                node_raw, self.cfg.radio.transport, shared=True,
             )
             if recipient is None:
                 self._db_request_log.set_state(
@@ -4659,16 +4663,22 @@ def cmd_db_stats(cfg: Config) -> int:
     if conn is None:
         return 1
     try:
-        for table in (
-            "observations",
-            "nodes",
-            "guestbook",
-            "processed_requests",
-            "daily_stats",
-            "blocked_senders",
-        ):
+        shared = cfg.database.resolved_bbs_path is not None
+        # With a shared file the BBS tables are not in main: list them
+        # separately under their own heading, as the same names resolve
+        # to bbs once main's copies are gone.
+        tables = ["observations", "nodes", "guestbook", "processed_requests", "daily_stats",
+                  "blocked_senders"]
+        if shared:
+            tables = [t for t in tables if t not in bbs_store.BBS_TABLES]
+        for table in tables:
             count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             print(f"{table}: {count}")
+        if shared:
+            print("bbs:")
+            for table in bbs_store.BBS_TABLES:
+                count = conn.execute(f"SELECT COUNT(*) FROM bbs.{table}").fetchone()[0]
+                print(f"  {table}: {count}")
         return 0
     finally:
         conn.close()
