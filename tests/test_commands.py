@@ -1579,3 +1579,32 @@ def test_wx_parses_and_channel_menu_name_it_within_budget():
     assert parse_command("wx").command is Command.WX
     assert "WX" in channel_menu_text()
     assert len(channel_menu_text().encode("utf-8")) <= 120
+
+
+# --- MC/MT mesh suffix (peer observatory) ---------------------------------
+
+
+@pytest.mark.parametrize("text,command,mesh", [
+    ("WHO MC", Command.WHO, "meshcore"),
+    ("who mt", Command.WHO, "meshtastic"),
+    ("GARDEN MC", Command.GARDEN, "meshcore"),
+    ("RECORD MT", Command.RECORD, "meshtastic"),
+])
+def test_parse_who_mc(text, command, mesh):
+    parsed = parse_command(text)
+    assert (parsed.command, parsed.argument, parsed.mesh) == (command, "", mesh)
+
+
+@pytest.mark.parametrize("text", ["WHO MX", "WHO MC MC", "GARDEN now", "WEEK MC", "ME MC"])
+def test_parse_who_garbage_still_unknown(text):
+    assert parse_command(text).command is Command.UNKNOWN
+
+
+def test_parse_seen_suffix_needs_a_node():
+    parsed = parse_command("SEEN !aabbccdd MC")
+    assert (parsed.command, parsed.argument, parsed.mesh) == (
+        Command.SEEN, "!aabbccdd", "meshcore")
+    # A lone MC is a node named "MC", as before the suffix existed.
+    lone = parse_command("SEEN MC")
+    assert (lone.argument, lone.mesh) == ("MC", None)
+    assert parse_command("SEEN bob").mesh is None

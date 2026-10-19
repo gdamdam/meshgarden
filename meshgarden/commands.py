@@ -339,6 +339,10 @@ class ParsedCommand:
     command: Command
     argument: str  # raw remainder; EMPTY for bare commands with no argument
     rejection_reason: str | None = None  # Diagnostic for a command hidden by a feature gate.
+    # Mesh named by a trailing MC/MT suffix (WHO/GARDEN/RECORD/SEEN): the
+    # parser cannot know which mesh the daemon itself serves, so the daemon
+    # treats its own mesh's suffix as no suffix. None = no suffix given.
+    mesh: str | None = None
 
 
 # LAB tier (Task 13): POST/READ/BOARDS are always experimental.
@@ -361,6 +365,11 @@ LAB_MENU_PAGES = ("LAB", "BOARDS")
 # generic `if rest: return UNKNOWN` handling in `parse_command` still applies
 # unchanged.
 _MENU_ALIASES = {"MENU", "?"}
+
+# Trailing mesh suffix accepted by the observatory commands: reads the
+# other mesh's observatory (see ParsedCommand.mesh).
+_MESH_SUFFIXES = {"MC": "meshcore", "MT": "meshtastic"}
+_MESH_SUFFIX_COMMANDS = frozenset({Command.WHO, Command.GARDEN, Command.RECORD})
 
 _BARE_COMMANDS = {
     "NEW": Command.NEW,
@@ -574,7 +583,14 @@ def parse_command(text: str, *, lab_unlock_word: str = "") -> ParsedCommand:
     if upper == "GUESTBOOK":
         return _parse_guestbook_argument(rest.strip())
     if upper == "SEEN":
-        return ParsedCommand(Command.SEEN, rest.strip())
+        argument = rest.strip()
+        # Needs a node before the suffix: a lone `SEEN MC` is a node named
+        # "MC", exactly as it parsed before the suffix existed.
+        words = argument.rsplit(None, 1)
+        mesh = _MESH_SUFFIXES.get(words[1].upper()) if len(words) == 2 else None
+        if mesh is not None:
+            return ParsedCommand(Command.SEEN, words[0].strip(), mesh=mesh)
+        return ParsedCommand(Command.SEEN, argument)
     if upper == "MAIL":
         return ParsedCommand(Command.MAIL, rest.strip())
     if upper == "HELP":
@@ -594,6 +610,9 @@ def parse_command(text: str, *, lab_unlock_word: str = "") -> ParsedCommand:
             return ParsedCommand(Command.CMD_HELP, arg_upper)
         return ParsedCommand(Command.MENU, arg)
     if upper in _BARE_COMMANDS:
+        mesh = _MESH_SUFFIXES.get(rest.strip().upper())
+        if mesh is not None and _BARE_COMMANDS[upper] in _MESH_SUFFIX_COMMANDS:
+            return ParsedCommand(_BARE_COMMANDS[upper], "", mesh=mesh)
         if rest:
             return ParsedCommand(Command.UNKNOWN, "")
         return ParsedCommand(_BARE_COMMANDS[upper], "")

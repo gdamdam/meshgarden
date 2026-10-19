@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 
-from tests.fakes import make_packet
+import pytest
+
+from tests.fakes import FakeTransport, make_packet
 
 
 def b(s: str) -> int:
@@ -252,3 +254,118 @@ def test_unsign_does_not_delete_the_entry(daemon):
     daemon.drain()
     count = daemon.conn.execute("SELECT count(*) FROM guestbook").fetchone()[0]
     assert count == 1  # still stored, only hidden -- an operator can still delete it
+
+
+# --- MC/MT suffix: peer observatory -----------------------------------------
+
+
+def _peer_daemon(tmp_path, *, make_peer=True, shared=True):
+    import time
+    from dataclasses import replace
+
+    from meshgarden.database import connect, migrate
+    from meshgarden.main import Daemon
+    from tests.conftest import _cfg, _unlock_standard_lab_senders
+
+    peer = tmp_path / "peer.db"
+    if make_peer:
+        pc = connect(str(peer))
+        migrate(pc)
+        now = int(time.time())
+        pc.execute(
+            "INSERT INTO nodes(node_id, short_name, long_name, observed_first_seen, "
+            "observed_last_seen) VALUES ('!c0ffee01', 'Mcnode', 'Mc node', 0, 0)"
+        )
+        pc.execute(
+            "INSERT INTO node_daily(node_id, day, packets) VALUES (?, ?, 3)",
+            ("!c0ffee01", time.strftime("%Y-%m-%d", time.gmtime(now))),
+        )
+        for i, sender in enumerate(["!c0ffee01", "!c0ffee02"]):
+            pc.execute(
+                "INSERT INTO observations(server_time, sender_node_id, dest_node_id, channel, "
+                "portnum, packet_id, is_duplicate, rx_snr, hops_away, pki_encrypted) "
+                "VALUES (?, ?, '^all', 0, 'TEXT_MESSAGE_APP', ?, 0, 5.0, 0, 0)",
+                (now - 10, sender, 100 + i),
+            )
+        pc.commit()
+        pc.close()
+    cfg = _cfg(tmp_path)
+    cfg = replace(cfg, database=replace(
+        cfg.database, peer_path=str(peer),
+        bbs_path=str(tmp_path / "bbs.db") if shared else "",
+    ))
+    ft = FakeTransport(0x11223344, cfg.radio.expected_node_id, service_cfg=cfg.service)
+    d = Daemon(cfg, transport=ft, start_metrics=False)
+    d.iface = ft.iface
+    d.start()
+    _unlock_standard_lab_senders(d.conn)
+    return d
+
+
+@pytest.fixture
+def peer_daemon(tmp_path):
+    d = _peer_daemon(tmp_path)
+    yield d
+    d.stop()
+
+
+def _ask(d, text, packet_id, from_num=0xAABBCCDD):
+    d.iface.emit_packet(make_packet(
+        to_num=d.my_node_num, from_num=from_num, text=text, packet_id=packet_id))
+    d.drain()
+    return d.iface.sent[-1]["text"]
+
+
+def test_who_mc_reads_peer_db(peer_daemon):
+    reply = _ask(peer_daemon, "WHO MC", 9900)
+    assert "last hour 2 · 2 direct" in reply
+    assert reply.endswith("(MeshCore)")
+    # The daemon's own observatory holds only the two asking nodes.
+    assert "last hour 2 · 0 direct" in _ask(peer_daemon, "WHO", 9901, from_num=0xAABBCCDE)
+
+
+def test_who_own_mesh_unchanged_bytes(peer_daemon):
+    # A suffix naming the daemon's own mesh is the same as none: exactly
+    # today's bytes, no mesh label.
+    own = _ask(peer_daemon, "WHO MT", 9902)
+    assert own == "👥 Nodes heard\nlast hour 1 · 0 direct\nlast 24h 1 🌱"
+
+
+def test_garden_and_record_mc_label_and_budget(peer_daemon):
+    garden = _ask(peer_daemon, "GARDEN MC", 9904)
+    assert garden.endswith("(MeshCore)") and "2 nodes today" in garden
+    record = _ask(peer_daemon, "RECORD MC", 9905, from_num=0xAABBCCDE)
+    assert record.endswith("(MeshCore)") and "Mcnode" in record
+    assert b(garden) <= peer_daemon._transport.max_text_bytes
+
+
+def test_seen_mc_resolves_on_peer(peer_daemon):
+    reply = _ask(peer_daemon, "SEEN Mcnode MC", 9906)
+    assert reply.startswith("📡 Mcnode · !ee01") and reply.endswith("(MeshCore)")
+    # The same short name is unknown to this daemon's own observatory.
+    assert "not heard" in _ask(peer_daemon, "SEEN Mcnode", 9907, from_num=0xAABBCCDE)
+
+
+def test_who_mc_peer_missing_reply(tmp_path):
+    d = _peer_daemon(tmp_path, make_peer=False)
+    try:
+        assert _ask(d, "WHO MC", 9908) == "MeshCore data unavailable right now"
+        assert _ask(d, "SEEN x MC", 9909, from_num=0xAABBCCDE) == (
+            "MeshCore data unavailable right now"
+        )
+    finally:
+        d.stop()
+
+
+def test_mail_name_resolves_on_peer(tmp_path):
+    d = _peer_daemon(tmp_path)
+    try:
+        from meshgarden.mail import MailPrefs
+
+        MailPrefs(d.conn).set("mc:!c0ffee01", True, 1000)
+        _ask(d, "MAIL Mcnode hello peer", 9910)
+        rows = [tuple(r) for r in d.conn.execute(
+            "SELECT recipient_node_id, message FROM mail")]
+        assert rows == [("mc:!c0ffee01", "hello peer")]
+    finally:
+        d.stop()

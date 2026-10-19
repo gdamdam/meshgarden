@@ -34,6 +34,7 @@ only the Daemon class the CLI will drive.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -200,6 +201,8 @@ from meshgarden.wordle import play as wordle_play
 from meshgarden.wordle import prune_wordle_state, wordle_stats_summary
 
 log = logging.getLogger(__name__)
+
+_MESH_LABELS = {"meshcore": "MeshCore", "meshtastic": "Meshtastic"}
 
 _CHANNEL_PUBLIC_COMMANDS = frozenset(
     {
@@ -493,6 +496,13 @@ def _configure_logging(log_dir: str) -> None:
     stream_handler.setFormatter(fmt)
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
+
+
+def _seen_label(conn: sqlite3.Connection, node_id: str, transport: Transport) -> str:
+    """"<name> · <tail>" (or the bare tail) from `conn`'s own `nodes` table."""
+    name = lookup_node_name(conn, node_id)
+    tail = transport.short_label(node_id)
+    return f"{name} · {tail}" if name else tail
 
 
 def _node_label_for(raw_argument: str, transport: Transport) -> str:
@@ -2235,7 +2245,9 @@ class Daemon:
             return
 
         if parsed.command == Command.SEEN:
-            self._handle_seen(sender_node_id, parsed.argument, obs, now)
+            self._handle_seen(
+                sender_node_id, parsed.argument, obs, now, mesh=self._peer_mesh(parsed.mesh)
+            )
             return
 
         if parsed.command == Command.ME:
@@ -2285,7 +2297,10 @@ class Daemon:
             self._handle_lab_unlock(sender_node_id, obs, now)
             return
 
-        self._handle_simple_command(parsed.command, sender_node_id, obs, now, parsed.argument)
+        self._handle_simple_command(
+            parsed.command, sender_node_id, obs, now, parsed.argument,
+            mesh=self._peer_mesh(parsed.mesh),
+        )
 
     # -- MeshCore receive path (task 3B-2 item B) -------------------------
     #
@@ -2721,6 +2736,7 @@ class Daemon:
         obs: IncomingPacket,
         now: int,
         argument: str = "",
+        mesh: str | None = None,
     ) -> None:
         """MENU / INFO / STATS / ICHING / HAIKU / NOT_EMERGENCY / GARDEN /
         RECORD / WEEK / CMD_HELP / WHO / BOARDS / VERSION: a single fixed (aggregate-
@@ -2748,7 +2764,7 @@ class Daemon:
             (
                 channel_menu_text()
                 if command is Command.MENU and obs.reply_channel_idx is not None
-                else self._build_response_body(command, sender_node_id, now, argument)
+                else self._build_response_body(command, sender_node_id, now, argument, mesh)
             ),
             self._transport.max_text_bytes,
         )
@@ -2791,8 +2807,13 @@ class Daemon:
                                             "accepted" if sent else "queue_full").inc()
 
     def _build_response_body(
-        self, command: Command, sender_node_id: str, now: int, argument: str = ""
+        self, command: Command, sender_node_id: str, now: int, argument: str = "",
+        mesh: str | None = None,
     ) -> str:
+        if mesh is not None:
+            # Only WHO/GARDEN/RECORD parse a mesh suffix; `mesh` is already
+            # the peer's (own-mesh suffixes were normalised away).
+            return self._peer_response_body(command, mesh, now)
         if command == Command.MENU:
             # Same "tier on AND this sender unlocked it" test as
             # _process_obs's `lab_locked` gate -- an unlocked node's own
@@ -3112,7 +3133,8 @@ class Daemon:
         self._metrics.commands_total.labels(Command.WORDLE.value, outcome).inc()
 
     def _handle_seen(
-        self, sender_node_id: str, raw_argument: str, obs: IncomingPacket, now: int
+        self, sender_node_id: str, raw_argument: str, obs: IncomingPacket, now: int,
+        mesh: str | None = None,
     ) -> None:
         """SEEN <node>: resolves the argument (full id / 4-hex tail / exact
         short name -- `Collector.resolve_node`) and reports when/how we
@@ -3133,9 +3155,35 @@ class Daemon:
             )
             self._metrics.commands_total.labels(Command.SEEN.value, "rejected").inc()
             return
-        earliest = self._collector.first_packet_at()
+        if mesh is None:
+            body = self._seen_body(self._collector, self._db_conn, raw_argument, now)
+        else:
+            label = _MESH_LABELS[mesh]
+            suffix = f" ({label})"
+            try:
+                with self._peer_observatory() as (collector, conn):
+                    body = self._seen_body(
+                        collector, conn, raw_argument, now, suffix=suffix
+                    )
+            except sqlite3.Error:
+                body = f"{label} data unavailable right now"
+        body = truncate_utf8(body, self._transport.max_text_bytes)
+        sent = self._reserve_and_send(sender_node_id, obs, now, body)
+        outcome = "accepted" if sent else "queue_full"
+        self._metrics.commands_total.labels(Command.SEEN.value, outcome).inc()
+
+    def _seen_body(
+        self, collector: Collector, conn: sqlite3.Connection, raw_argument: str, now: int,
+        suffix: str = "",
+    ) -> str:
+        """SEEN's reply text from `collector`'s observatory; `conn` is the
+        same database, so a node's name comes from the mesh it was heard on.
+        `suffix` (the peer mesh label) is appended after the formatters ran
+        within a budget that leaves it room."""
+        max_bytes = self._transport.max_text_bytes - len(suffix.encode("utf-8"))
+        earliest = collector.first_packet_at()
         listening_seconds = now - earliest if earliest is not None else None
-        resolution = self._collector.resolve_node(
+        resolution = collector.resolve_node(
             raw_argument, parse_node_argument=self._transport.parse_node_argument
         )
         if resolution.ambiguous:
@@ -3147,8 +3195,8 @@ class Daemon:
         else:
             node_id = resolution.node_id
             today = datetime.fromtimestamp(now, tz=UTC).strftime("%Y-%m-%d")
-            days_seen = self._collector.days_seen_last_n(node_id, today, 7)
-            last_obs = self._collector.last_observation(node_id)
+            days_seen = collector.days_seen_last_n(node_id, today, 7)
+            last_obs = collector.last_observation(node_id)
             if days_seen == 0 or last_obs is None:
                 # Resolved but not observed in the last 7 days: the exact
                 # same reply as "never observed" -- deliberately
@@ -3177,21 +3225,18 @@ class Daemon:
                     how, snr = "direct", last_obs["rx_snr"]
                 else:
                     how, snr = f"via {hops_away} hops", None
-                first_seen = self._collector.first_seen_date(node_id, self.cfg.service.timezone)
+                first_seen = collector.first_seen_date(node_id, self.cfg.service.timezone)
                 body = seen_text(
-                    self._node_report_label(node_id),
+                    _seen_label(conn, node_id, self._transport),
                     relative_ago=_relative_ago(delta),
                     how=how,
                     snr=snr,
                     first_seen_date=first_seen or "unknown",
                     days_seen=days_seen,
-                    heard_24h=self._collector.sender_observations_since(node_id, now - 86400),
-                    max_bytes=self._transport.max_text_bytes,
+                    heard_24h=collector.sender_observations_since(node_id, now - 86400),
+                    max_bytes=max_bytes,
                 )
-        body = truncate_utf8(body, self._transport.max_text_bytes)
-        sent = self._reserve_and_send(sender_node_id, obs, now, body)
-        outcome = "accepted" if sent else "queue_full"
-        self._metrics.commands_total.labels(Command.SEEN.value, outcome).inc()
+        return body + suffix
 
     def _handle_ping(self, sender_node_id: str, obs: IncomingPacket, now: int) -> None:
         """PING: same single-reply dispatch as `_handle_simple_command`,
@@ -3397,6 +3442,112 @@ class Daemon:
         if commit_rate_limit:
             self._limiter.commit_command(sender_node_id)
         return True
+
+    def _peer_mesh(self, suffix_mesh: str | None) -> str | None:
+        """The peer mesh a command suffix names, or None for this daemon's
+        own mesh (no suffix, or a suffix naming the mesh it already serves)."""
+        if suffix_mesh is None or suffix_mesh == self.cfg.radio.transport:
+            return None
+        return suffix_mesh
+
+    @contextlib.contextmanager
+    def _peer_observatory(self):
+        """Yields (Collector, connection) over the peer's observatory DB,
+        opened read-only and closed on exit. Opened per request on the
+        calling (DB worker) thread, never kept: the peer's file may appear
+        or disappear while this daemon runs. Raises sqlite3.Error when no
+        peer is configured or its file cannot be opened/read."""
+        path = self.cfg.database.peer_path
+        if not path:
+            raise sqlite3.OperationalError("no peer observatory configured")
+        # No bbs_path: the peer contributes observatory data only; BBS
+        # tables stay on this daemon's own shared file.
+        conn = connect(path, read_only=True)
+        try:
+            yield Collector(conn), conn
+        finally:
+            conn.close()
+
+    def _peer_response_body(self, command: Command, mesh: str, now: int) -> str:
+        """WHO/GARDEN/RECORD for the peer mesh's observatory, labelled with
+        the mesh so it cannot be mistaken for this mesh's own numbers."""
+        label = _MESH_LABELS[mesh]
+        max_bytes = self._transport.max_text_bytes
+        suffix = f" ({label})"
+        # Reserve the label's room up front so the formatters' own
+        # truncation never cuts it off.
+        budget = max_bytes - len(suffix.encode("utf-8"))
+        try:
+            with self._peer_observatory() as (collector, conn):
+                if command == Command.WHO:
+                    body = who_text(
+                        heard_1h=collector.distinct_senders_since(now - 3600),
+                        direct_1h=collector.distinct_direct_senders_since(now - 3600),
+                        heard_24h=collector.distinct_senders_since(now - 86400),
+                    )
+                elif command == Command.GARDEN:
+                    midnight = local_midnight(now, self.cfg.service.timezone)
+                    body = garden_text(
+                        self.cfg.service.name,
+                        nodes_today=collector.distinct_senders_since(midnight),
+                        heard_direct=collector.distinct_direct_senders_since(midnight),
+                        best_snr=collector.best_snr_since(now - 86400),
+                        guestbook_entries=self._guestbook.visible_count(),
+                        furthest_direct_km=collector.furthest_direct_km_since(
+                            midnight, **self._distance_limits()
+                        ),
+                        max_bytes=budget,
+                    )
+                elif command == Command.RECORD:
+                    body = self._peer_record_body(collector, conn, mesh, now, budget)
+                else:
+                    raise AssertionError(f"command has no peer form: {command!r}")
+        except sqlite3.Error:
+            return truncate_utf8(f"{label} data unavailable right now", max_bytes)
+        return truncate_utf8(body, budget) + suffix
+
+    def _distance_limits(self) -> dict:
+        obs_cfg = self.cfg.observatory
+        return {
+            "observatory_lat": obs_cfg.latitude,
+            "observatory_lon": obs_cfg.longitude,
+            "max_direct_km": obs_cfg.max_direct_km,
+            "max_km_per_hop": obs_cfg.max_km_per_hop,
+            "max_observed_km": obs_cfg.max_observed_km,
+        }
+
+    def _peer_record_body(
+        self, collector: Collector, conn: sqlite3.Connection, mesh: str, now: int, budget: int
+    ) -> str:
+        midnight = local_midnight(now, self.cfg.service.timezone)
+        best = collector.best_snr_with_sender_since(midnight)
+        best_snr, best_snr_node_id = best if best is not None else (None, None)
+        hops = collector.max_hops_with_sender_since(midnight)
+        max_hops, max_hops_node_id = hops if hops is not None else (None, None)
+        far = collector.furthest_observed_km_with_node_since(
+            midnight, **self._distance_limits()
+        )
+        far_km, far_node_id = far if far is not None else (None, None)
+        # Names come from the peer's own `nodes`: this daemon's table would
+        # give the same bare id a different (or no) node's name.
+        return record_text(
+            best_snr=best_snr,
+            best_snr_node_id=best_snr_node_id,
+            best_snr_node_name=lookup_node_name(conn, best_snr_node_id),
+            max_hops=max_hops,
+            max_hops_node_id=max_hops_node_id,
+            max_hops_node_name=lookup_node_name(conn, max_hops_node_id),
+            busiest_hour=collector.busiest_hour_since(midnight, self.cfg.service.timezone),
+            total_packets=collector.raw_events_since(midnight),
+            furthest_observed_km=far_km,
+            furthest_observed_node_id=far_node_id,
+            furthest_observed_node_name=lookup_node_name(conn, far_node_id),
+            companion_events=mesh == "meshcore",
+            max_bytes=budget,
+        )
+
+    def _peer_transport_name(self) -> str:
+        return "meshtastic" if self.cfg.radio.transport == "meshcore" else "meshcore"
 
     def _bbs_id(self, node_id: str) -> str:
         """The form of a sender/recipient id stored in the BBS tables.
@@ -3893,6 +4044,18 @@ class Daemon:
         outcome = "accepted" if sent and success else "rejected" if sent else "queue_full"
         self._metrics.commands_total.labels(Command.MAIL.value, outcome).inc()
 
+    def _resolve_on_peer(self, node_raw: str) -> str | None:
+        """Peer-mesh bare id for a MAIL recipient this mesh does not know;
+        None when unknown, ambiguous there, or the peer is unavailable."""
+        try:
+            with self._peer_observatory() as (collector, _conn):
+                resolution = collector.resolve_node(
+                    node_raw, parse_node_argument=self._transport.parse_node_argument
+                )
+        except sqlite3.Error:
+            return None
+        return resolution.node_id
+
     def _handle_mail_send(
         self, sender_node_id: str, arg: str, obs: IncomingPacket, now: int
     ) -> None:
@@ -3957,7 +4120,14 @@ class Daemon:
             resolution = self._collector.resolve_node(
                 node_raw, parse_node_argument=self._transport.parse_node_argument
             )
-            if resolution.node_id is None:
+            peer_node_id = None
+            if (
+                resolution.node_id is None
+                and not resolution.ambiguous
+                and self.cfg.database.resolved_bbs_path is not None
+            ):
+                peer_node_id = self._resolve_on_peer(node_raw)
+            if resolution.node_id is None and peer_node_id is None:
                 self._db_request_log.set_state(
                     sender_node_id,
                     obs.packet_id,
@@ -3967,7 +4137,12 @@ class Daemon:
                 )
                 self._metrics.commands_total.labels(Command.MAIL.value, "rejected").inc()
                 return
-            recipient = self._bbs_id(resolution.node_id)
+            if resolution.node_id is not None:
+                recipient = self._bbs_id(resolution.node_id)
+            else:
+                # Qualified with the PEER's mesh: the bare id was found in
+                # the peer's node table, not this one's.
+                recipient = bbs_ids.qualify(peer_node_id, self._peer_transport_name())
 
         try:
             normalized = self._guestbook.validate(message_raw, inbound_payload_len=obs.payload_len)
