@@ -1855,3 +1855,17 @@ def test_nav_marks_the_current_tab_and_spaces_the_tabs():
     assert f'<a href="{href}" class="active" aria-current="page">' in page
     assert page.count('aria-current="page"') == 1
     assert "nav.top { display: flex; flex-wrap: wrap;" in page
+
+
+def test_unknown_hop_count_is_not_flagged_implausible_on_display(tmp_path):
+    """MeshCore traffic rarely carries a hop count: a neighbour 0 km away
+    with none must not be marked implausible; the absolute ceiling still
+    applies, and a known hop count keeps the per-hop check."""
+    from meshgarden.web import _display_distance_plausible
+    from tests.conftest import _cfg
+
+    cfg = _cfg(tmp_path)
+    assert _display_distance_plausible(0.2, None, cfg)
+    assert not _display_distance_plausible(cfg.observatory.max_observed_km + 1, None, cfg)
+    assert not _display_distance_plausible(cfg.observatory.max_direct_km + 1, 0, cfg)
+    assert _display_distance_plausible(1.0, 0, cfg)

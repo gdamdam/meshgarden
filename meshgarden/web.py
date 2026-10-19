@@ -430,6 +430,25 @@ def _classify_nodes(conn: sqlite3.Connection, now: int) -> dict[str, str]:
     }
 
 
+def _display_distance_plausible(distance_km: float, hops: int | None, cfg: Config) -> bool:
+    """Whether /map and /nodes/<id> flag a distance as implausible.
+
+    An unknown hop count says nothing against a distance: MeshCore traffic
+    rarely carries one, so treating "unknown" as "implausible" (as the
+    records check rightly does, to keep such nodes out of "furthest"
+    records) flagged every MeshCore node, a 0 km neighbour included. With
+    no hop count, only the absolute `max_observed_km` ceiling applies."""
+    if hops is None:
+        return distance_km <= cfg.observatory.max_observed_km
+    return is_distance_plausible_for_hops(
+        distance_km,
+        hops,
+        max_direct_km=cfg.observatory.max_direct_km,
+        max_km_per_hop=cfg.observatory.max_km_per_hop,
+        max_observed_km=cfg.observatory.max_observed_km,
+    )
+
+
 def _node_min_hops(conn: sqlite3.Connection, now: int) -> dict[str, int | None]:
     """node_id -> lowest derived hop count observed in the trailing 7 days
     (None if never derivable in that window), from `node_daily.best_hops`.
@@ -1210,18 +1229,13 @@ def _page_node_profile(cfg: Config, conn: sqlite3.Connection, node_id: str) -> b
             )
             plausible = is_position_plausible(
                 node["last_position_lat"], node["last_position_lon"], precision_bits
-            ) and is_distance_plausible_for_hops(
-                dist,
-                best_hops_7d,
-                max_direct_km=cfg.observatory.max_direct_km,
-                max_km_per_hop=cfg.observatory.max_km_per_hop,
-                max_observed_km=cfg.observatory.max_observed_km,
-            )
-            verdict = (
-                "plausible"
-                if plausible
-                else "position/distance implausible for hops (excluded from records)"
-            )
+            ) and _display_distance_plausible(dist, best_hops_7d, cfg)
+            if not plausible:
+                verdict = "position/distance implausible for hops (excluded from records)"
+            elif best_hops_7d is None:
+                verdict = "plausible (hop count unknown, so not used for distance records)"
+            else:
+                verdict = "plausible"
             distance_bearing_html = (
                 f"<p>Position: known. Distance {dist:.0f} km, bearing {bearing:.0f}&deg; from "
                 f"the observatory (position precision: {tpl.esc(precision_s)} -- coarser "
@@ -1488,13 +1502,7 @@ def _page_map(cfg: Config, conn: sqlite3.Connection, query: dict[str, list[str]]
             entry["bearing_deg"] = _bearing_deg(obs[0], obs[1], lat, lon)
             entry["plausible"] = is_position_plausible(
                 lat, lon, precision.get(r["node_id"])
-            ) and is_distance_plausible_for_hops(
-                distance_km,
-                min_hops.get(r["node_id"]),
-                max_direct_km=cfg.observatory.max_direct_km,
-                max_km_per_hop=cfg.observatory.max_km_per_hop,
-                max_observed_km=cfg.observatory.max_observed_km,
-            )
+            ) and _display_distance_plausible(distance_km, min_hops.get(r["node_id"]), cfg)
         else:
             entry["distance_km"] = None
             entry["plausible"] = True

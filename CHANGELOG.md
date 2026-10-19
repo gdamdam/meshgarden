@@ -9,6 +9,15 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.13.2] - 2026-10-19
+
+### Fixed
+
+- Dashboard `/map` and node pages flagged every MeshCore node "⚠ implausible", even a neighbour
+  0 km away: MeshCore traffic rarely carries a hop count, and an unknown hop count was treated as
+  implausible. On display an unknown hop count now only applies the absolute `max_observed_km`
+  ceiling; a known one keeps the per-hop check. Such nodes still never claim "furthest" records.
+
 ## [1.13.1] - 2026-10-19
 
 ### Fixed
