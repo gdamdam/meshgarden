@@ -9,6 +9,8 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-19
+
 ### Added
 
 - `MAIL NOTIFY ON|OFF`: a radio that opts in gets one short DM, `📬 N notes waiting`, when new mail

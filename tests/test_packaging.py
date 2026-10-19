@@ -79,7 +79,7 @@ def test_pyproject_version_matches_the_package_version():
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert pyproject["project"]["version"] == __version__
-    assert __version__ == "1.12.4"
+    assert __version__ == "1.13.0"
 
 
 def test_readme_version_badge_matches_the_package_version():
