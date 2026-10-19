@@ -44,6 +44,7 @@ import sqlite3
 import statistics
 import threading
 import time
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2302,6 +2303,114 @@ def _ok(body: bytes) -> tuple[HTTPStatus, str, bytes]:
     return HTTPStatus.OK, _HTML_CONTENT_TYPE, body
 
 
+_MESH_CODES = {"meshtastic": "mt", "meshcore": "mc"}
+_MESH_LABELS = {"mt": "Meshtastic", "mc": "MeshCore"}
+_MESH_OPTIONS = (("mt", "Meshtastic"), ("mc", "MeshCore"), ("both", "Both"))
+# Pages drawn from the observatory DB, which the mesh switcher applies to.
+# BBS pages and the JSON APIs read the shared bbs.db / own mesh as before.
+_OBSERVATORY_PAGES = frozenset({
+    "now", "health", "traffic", "records", "nodes", "map", "topology", "propagation",
+    "digest_index",
+})
+
+
+def _peer_cfg(cfg: Config) -> Config | None:
+    """A Config describing the other mesh's daemon (its observatory file,
+    its transport, its status.json/digest dir beside it), or None when no
+    peer is configured or its file is not there yet -- the other daemon
+    may simply not have started, which hides the switcher, never errors."""
+    peer_path = cfg.database.peer_path
+    if not peer_path or not os.path.isfile(peer_path):
+        return None
+    peer_transport = "meshtastic" if cfg.radio.transport == "meshcore" else "meshcore"
+    return replace(
+        cfg,
+        radio=replace(cfg.radio, transport=peer_transport),
+        database=replace(cfg.database, path=peer_path, peer_path=cfg.database.path),
+    )
+
+
+def _select_meshes(
+    cfg: Config, query: dict[str, list[str]]
+) -> tuple[str, Config | None, list[tuple[str, Config]]]:
+    """Resolves `?mesh=mt|mc|both` to (selected code, peer cfg, the
+    (label, cfg) sections to render). Anything unrecognised, or naming a
+    mesh whose peer is unavailable, falls back to this daemon's own mesh."""
+    own_code = _MESH_CODES.get(cfg.radio.transport, "mt")
+    peer = _peer_cfg(cfg)
+    own = (_MESH_LABELS[own_code], cfg)
+    raw = query.get("mesh", [""])[0]
+    if peer is not None:
+        peer_code = _MESH_CODES[peer.radio.transport]
+        peer_section = (_MESH_LABELS[peer_code], peer)
+        if raw == peer_code:
+            return raw, peer, [peer_section]
+        if raw == "both":
+            # Meshtastic first, whichever daemon serves the page.
+            sections = [own, peer_section] if own_code == "mt" else [peer_section, own]
+            return raw, peer, sections
+    return own_code, peer, [own]
+
+
+def _observatory_body(
+    cfg: Config, name: str, query: dict[str, list[str]], arg: str | None
+) -> bytes | None:
+    """One observatory page for one mesh's config; None when the page does
+    not exist there (unknown digest day or node)."""
+    if name == "digest_index":
+        return _page_digest_index(cfg)
+    if name == "digest_day":
+        return _page_digest_day(cfg, arg)
+    status, stale = read_status(cfg)
+    conn = _ro_connect(cfg)
+    try:
+        if name == "now":
+            return _page_now(cfg, conn, status, stale)
+        if name == "health":
+            return _page_health(cfg, conn, status, stale)
+        if name == "traffic":
+            return _page_traffic(cfg, conn, status, stale)
+        if name == "records":
+            return _page_records(cfg, conn, status, stale)
+        if name == "nodes":
+            return _page_nodes(cfg, conn, status, stale, _parse_page(query))
+        if name == "map":
+            return _page_map(cfg, conn, query)
+        if name == "topology":
+            return _page_topology(cfg, conn)
+        if name == "propagation":
+            return _page_propagation(cfg, conn)
+        return _page_node_profile(cfg, conn, arg)
+    finally:
+        conn.close()
+
+
+def _mesh_page(
+    cfg: Config,
+    path: str,
+    query: dict[str, list[str]],
+    name: str,
+    arg: str | None = None,
+    missing: str = "not found",
+) -> tuple[HTTPStatus, str, bytes]:
+    selected, peer, sections = _select_meshes(cfg, query)
+    rendered = [(label, _observatory_body(c, name, query, arg)) for label, c in sections]
+    pages = [(label, page) for label, page in rendered if page is not None]
+    if not pages:
+        return _not_found(missing)
+    body = pages[0][1]
+    if len(sections) > 1:
+        # One document: the first page's chrome around every mesh's body.
+        stacked = "\n".join(
+            f"<h2>{tpl.esc(label)}</h2>\n{tpl.main_of(page)}" for label, page in pages
+        )
+        body = tpl.with_main(body, stacked)
+    if peer is not None:
+        switcher = tpl.mesh_switcher(path, selected, _MESH_OPTIONS)
+        body = tpl.with_main(body, switcher + "\n" + tpl.main_of(body))
+    return _ok(body)
+
+
 def _dispatch(cfg: Config, path: str, query: dict[str, list[str]]) -> tuple[HTTPStatus, str, bytes]:
     name = _ROUTE_STATIC.get(path)
     if name is None:
@@ -2310,56 +2419,29 @@ def _dispatch(cfg: Config, path: str, query: dict[str, list[str]]) -> tuple[HTTP
             day = m.group(1)
             if not _DAY_RE.match(day) or not _valid_calendar_day(day):
                 return _not_found()
-            body = _page_digest_day(cfg, day)
-            if body is None:
-                return _not_found("digest not found")
-            return _ok(body)
+            return _mesh_page(cfg, path, query, "digest_day", day, "digest not found")
 
         m = _NODE_PROFILE_RE.match(path)
         if m:
             node_id = m.group(1)
             if not _NODE_ID_RE.match(node_id):
                 return _not_found()
-            conn = _ro_connect(cfg)
-            try:
-                body = _page_node_profile(cfg, conn, node_id.lower())
-            finally:
-                conn.close()
-            if body is None:
-                return _not_found("node not found")
-            return _ok(body)
+            return _mesh_page(cfg, path, query, "node_profile", node_id.lower(), "node not found")
 
         return _not_found()
 
-    if name == "digest_index":
-        return _ok(_page_digest_index(cfg))
+    if name in _OBSERVATORY_PAGES:
+        return _mesh_page(cfg, path, query, name)
 
     status, stale = read_status(cfg)
     conn = _ro_connect(cfg)
     try:
-        if name == "now":
-            body = _page_now(cfg, conn, status, stale)
-        elif name == "health":
-            body = _page_health(cfg, conn, status, stale)
-        elif name == "traffic":
-            body = _page_traffic(cfg, conn, status, stale)
-        elif name == "guestbook":
+        if name == "guestbook":
             page = _parse_page(query)
             topic = _parse_topic(query)
             body = _page_guestbook(cfg, conn, status, stale, page, topic)
         elif name == "boards":
             body = _page_boards(cfg, conn)
-        elif name == "records":
-            body = _page_records(cfg, conn, status, stale)
-        elif name == "nodes":
-            page = _parse_page(query)
-            body = _page_nodes(cfg, conn, status, stale, page)
-        elif name == "map":
-            body = _page_map(cfg, conn, query)
-        elif name == "topology":
-            body = _page_topology(cfg, conn)
-        elif name == "propagation":
-            body = _page_propagation(cfg, conn)
         elif name == "summary":
             return HTTPStatus.OK, _JSON_CONTENT_TYPE, _api_summary(cfg, conn, status, stale)
         elif name == "records_json":

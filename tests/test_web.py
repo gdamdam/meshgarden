@@ -1704,3 +1704,94 @@ def test_health_located_count_excludes_placeholder_and_invalid_positions(tmp_pat
             assert web._mesh_health_json(conn, now)["nodes_with_position"] == expected
     finally:
         conn.close()
+
+
+# --- mesh switcher (shared BBS bridge) ---------------------------------------
+
+PEER_NODE = "!99887766"
+
+
+def _seed_peer(path: str, *, now: int, short_name: str = "Peerz") -> None:
+    conn = connect(path)
+    try:
+        migrate(conn, transport="meshcore")
+        conn.execute(
+            "INSERT INTO nodes (node_id, short_name, long_name, observed_first_seen, "
+            "observed_last_seen, observation_count) VALUES (?, ?, 'Peer Node', ?, ?, 1)",
+            (PEER_NODE, short_name, now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _mesh_cfg(tmp_path, *, with_peer: bool, seed_peer: bool = True) -> Config:
+    tmp_path.mkdir(exist_ok=True)
+    cfg = _cfg(tmp_path)
+    now = int(time.time())
+    _seed_db(cfg.database.path, now=now)
+    peer = str(tmp_path / "peer.db") if with_peer else ""
+    if with_peer and seed_peer:
+        _seed_peer(peer, now=now)
+    return replace(cfg, database=replace(cfg.database, peer_path=peer))
+
+
+def _page(cfg, path, query=None):
+    status, _ctype, body = web._dispatch(cfg, path, query or {})
+    return status, body.decode("utf-8")
+
+
+def test_mesh_switcher_hidden_without_peer(tmp_path):
+    for cfg in (
+        _mesh_cfg(tmp_path / "a", with_peer=False),
+        # Peer configured but the other daemon has not created its file yet.
+        _mesh_cfg(tmp_path / "b", with_peer=True, seed_peer=False),
+    ):
+        status, text = _page(cfg, "/", {"mesh": ["mc"]})
+        assert status == 200
+        assert "?mesh=" not in text
+        assert PEER_NODE not in text
+
+
+def test_now_page_mesh_mc_uses_peer(tmp_path):
+    cfg = _mesh_cfg(tmp_path, with_peer=True)
+    _, own = _page(cfg, "/nodes")
+    _, peer = _page(cfg, "/nodes", {"mesh": ["mc"]})
+    assert "Abcd" in own and "Peerz" not in own
+    assert "Peerz" in peer and "Abcd" not in peer
+    assert '<a href="/nodes?mesh=mt">Meshtastic</a>' in peer
+    assert "<b>MeshCore</b>" in peer
+    status, now_page = _page(cfg, "/", {"mesh": ["mc"]})
+    assert status == 200 and "<b>MeshCore</b>" in now_page
+
+
+def test_both_renders_two_sections(tmp_path):
+    cfg = _mesh_cfg(tmp_path, with_peer=True)
+    status, text = _page(cfg, "/nodes", {"mesh": ["both"]})
+    assert status == 200
+    assert text.index("<h2>Meshtastic</h2>") < text.index("<h2>MeshCore</h2>")
+    assert "Abcd" in text and "Peerz" in text
+    assert text.count("</main>") == 1
+
+
+def test_guestbook_page_reads_bbs(tmp_path):
+    cfg = _mesh_cfg(tmp_path, with_peer=True)
+    status, text = _page(cfg, "/guestbook", {"mesh": ["mc"]})
+    assert status == 200
+    # `mesh` is ignored: the guestbook is the own file's, with no switcher.
+    assert "Peerz" not in text and "?mesh=" not in text
+    assert "hi &lt;script&gt;" in text
+    status, body = web._dispatch(cfg, "/api/guestbook.json", {"mesh": ["mc"]})[0::2]
+    assert status == 200 and json.loads(body)["entries"]
+
+
+def test_invalid_mesh_param_falls_back(tmp_path):
+    cfg = _mesh_cfg(tmp_path, with_peer=True)
+    _, own = _page(cfg, "/nodes")
+    for value in ("xx", "", "MC"):
+        status, text = _page(cfg, "/nodes", {"mesh": [value]})
+        assert status == 200 and "Abcd" in text and "Peerz" not in text
+    # Unavailable peer: ?mesh=mc is the own mesh, not an error.
+    solo = _mesh_cfg(tmp_path / "solo", with_peer=False)
+    status, text = _page(solo, "/nodes", {"mesh": ["mc"]})
+    assert status == 200 and "Abcd" in text

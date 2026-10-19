@@ -10,6 +10,7 @@ tiny inline SVG bar charts. No external assets: all CSS is inlined in
 from __future__ import annotations
 
 import html
+import re
 from collections.abc import Iterable
 
 _NAV_ITEMS: tuple[tuple[str, str], ...] = (
@@ -302,6 +303,37 @@ def layout(*, title: str, active: str, body: str) -> bytes:
 </html>
 """
     return html_doc.encode("utf-8")
+
+
+_MAIN_RE = re.compile(r"(<main>\n)(.*)(\n</main>)", re.DOTALL)
+
+
+def mesh_switcher(path: str, selected: str, options: tuple[tuple[str, str], ...]) -> str:
+    """The `?mesh=` selector. Plain links to the same path (other query
+    parameters are dropped: a page number or filter from one mesh means
+    nothing on the other). `options` is (code, label) pairs."""
+    bits = []
+    for code, label in options:
+        if code == selected:
+            bits.append(f"<b>{esc(label)}</b>")
+        else:
+            bits.append(f'<a href="{esc(path)}?mesh={esc(code)}">{esc(label)}</a>')
+    return f'<p class="muted">Mesh: {" &middot; ".join(bits)}</p>'
+
+
+def main_of(page: bytes) -> str:
+    """The <main> contents of a page `layout` rendered; "" if absent."""
+    m = _MAIN_RE.search(page.decode("utf-8"))
+    return m.group(2) if m else ""
+
+
+def with_main(page: bytes, main: str) -> bytes:
+    """`page` with its <main> contents replaced. The page-body functions
+    return finished documents, so this lets the mesh switcher and the
+    stacked "both" view wrap them without touching every page."""
+    # A function replacement: `main` is page HTML, not a regex template.
+    swapped = _MAIN_RE.sub(lambda m: m.group(1) + main + m.group(3), page.decode("utf-8"), count=1)
+    return swapped.encode("utf-8")
 
 
 def error_page(status: int, message: str) -> bytes:
