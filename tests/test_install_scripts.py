@@ -588,6 +588,35 @@ def test_install_dry_run_detects_meshcore_transport_from_an_existing_config():
         assert "sync --frozen --no-dev --extra meshcore in" in result.stdout
 
 
+def test_install_dry_run_instance_keeps_meshcore_extra_for_default_config():
+    """`--instance mt --transport meshtastic` must not strip the meshcore
+    extra the default MeshCore daemon runs from."""
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "config.toml"), "w") as f:
+            f.write('[radio]\ntransport = "meshcore"\n')
+        result = subprocess.run(
+            [
+                INSTALL_SCRIPT,
+                "--dry-run",
+                "--skip-apt",
+                "--skip-uv-install",
+                "--no-start",
+                "--no-enable",
+                "--instance",
+                "mt",
+                "--transport",
+                "meshtastic",
+                "--config",
+                os.path.join(tmp, "mt.toml"),
+            ],
+            capture_output=True,
+            text=True,
+            env=_dry_run_env(),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "sync --frozen --no-dev --extra meshcore in" in result.stdout
+
+
 def test_install_dry_run_existing_meshtastic_config_never_requests_the_extra():
     with tempfile.TemporaryDirectory() as tmp:
         config_path = os.path.join(tmp, "config.toml")

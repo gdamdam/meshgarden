@@ -105,7 +105,9 @@ Options:
                         /etc/meshgarden/NAME.toml from config.example.toml if
                         absent (an existing one is never overwritten), keeps
                         its state under /var/lib/meshgarden/NAME/, and
-                        enables/starts meshgarden@NAME. Prints the config
+                        enables meshgarden@NAME. It is started only if the
+                        config already existed; a freshly seeded config is
+                        left stopped until you edit it. Prints the config
                         keys you must still edit (device, node id, ports,
                         bbs_path/peer_path). The default meshgarden.service
                         is not touched. NAME: lowercase letters, digits, "-",
@@ -509,18 +511,17 @@ UV_BIN_Q="$(printf '%q' "$UV_BIN")"
 # source present: "meshtastic", same as today -- no behavior change for a
 # Meshtastic-only install.
 EFFECTIVE_TRANSPORT="$TRANSPORT"
-# With --instance, the default instance's config is checked too: `uv sync`
-# without the extra would uninstall meshcore from the venv the default
-# MeshCore daemon is running from.
-MESHCORE_CHECK_PATHS=("$CONFIG_PATH")
-if [ -n "$INSTANCE" ]; then
-    MESHCORE_CHECK_PATHS+=("/etc/meshgarden/config.toml")
-fi
+# `uv sync` without the extra uninstalls meshcore from the venv shared by
+# every instance, so the extra is kept if ANY config in the config dir (the
+# default config.toml or any NAME.toml instance config, plus this one) uses
+# it -- regardless of --transport, and for a plain re-install too.
+MESHCORE_CHECK_PATHS=("$CONFIG_PATH" "$CONFIG_DIR"/*.toml)
 for mc_path in "${MESHCORE_CHECK_PATHS[@]}"; do
-    if [ -z "$EFFECTIVE_TRANSPORT" ] && [ -e "$mc_path" ] \
+    if [ -e "$mc_path" ] \
         && grep -Eq '^[[:space:]]*transport[[:space:]]*=[[:space:]]*"meshcore"' "$mc_path"; then
         EFFECTIVE_TRANSPORT="meshcore"
         log "detected transport = \"meshcore\" in existing $mc_path"
+        break
     fi
 done
 UV_SYNC_EXTRA=""

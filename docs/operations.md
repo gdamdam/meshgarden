@@ -166,7 +166,7 @@ a unit without `NOTIFY_SOCKET` / `WATCHDOG_USEC`.
 ## Two radios (shared garden)
 
 A MeshCore and a Meshtastic daemon can serve one BBS (guestbook, news, mail, games) from a single
-Pi. The default instance (`meshgarden.service`, `/etc/meshgarden/config.toml`) is unchanged; add a
+Pi. Sharing is opt-in: it only happens once `bbs_path` is set in each config. The default instance (`meshgarden.service`, `/etc/meshgarden/config.toml`) is unchanged; add a
 second one with:
 
 ```bash
@@ -176,7 +176,9 @@ sudo ./scripts/install-rpi.sh --instance mt --transport meshtastic
 This installs the `meshgarden@.service` template, seeds `/etc/meshgarden/mt.toml` from
 `config.example.toml` if absent (an existing file is never overwritten), creates
 `/var/lib/meshgarden/mt/`, and enables `meshgarden@mt` without starting it. Both instances run as
-the `meshgarden` user and share `/var/lib/meshgarden`.
+the `meshgarden` user and share `/var/lib/meshgarden`. The seeded `mt.toml` is the unedited example
+(placeholder device, default ports that clash with the default instance), which is why it is not
+started until you edit it.
 
 ```
 /var/lib/meshgarden/bbs.db                 shared BBS (both daemons)
@@ -200,6 +202,8 @@ bbs_path = "/var/lib/meshgarden/bbs.db"
 peer_path = "/var/lib/meshgarden/observatory.db"
 ```
 
+- **Restart the default daemon** (`sudo systemctl restart meshgarden`) after editing its
+  `config.toml`; it does not pick up `bbs_path`/`peer_path` until then.
 - **Start order.** Start the instance that already holds data first (normally the default one):
   on first start with `bbs_path` set it splits the BBS tables out of its observatory database
   into `bbs.db`. Then start `sudo systemctl start meshgarden@mt`.
