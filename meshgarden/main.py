@@ -2895,61 +2895,11 @@ class Daemon:
                 max_bytes=self._transport.max_text_bytes,
             )
         if command == Command.GARDEN:
-            midnight = local_midnight(now, self.cfg.service.timezone)
-            furthest_direct_km = self._collector.furthest_direct_km_since(
-                midnight,
-                observatory_lat=self.cfg.observatory.latitude,
-                observatory_lon=self.cfg.observatory.longitude,
-                max_direct_km=self.cfg.observatory.max_direct_km,
-                max_km_per_hop=self.cfg.observatory.max_km_per_hop,
-                max_observed_km=self.cfg.observatory.max_observed_km,
-            )
-            return garden_text(
-                self.cfg.service.name,
-                nodes_today=self._collector.distinct_senders_since(midnight),
-                heard_direct=self._collector.distinct_direct_senders_since(midnight),
-                best_snr=self._collector.best_snr_since(now - 86400),
-                guestbook_entries=self._guestbook.visible_count(),
-                furthest_direct_km=furthest_direct_km,
-                max_bytes=self._transport.max_text_bytes,
-            )
+            return self._garden_body(self._collector, now, self._transport.max_text_bytes)
         if command == Command.RECORD:
-            midnight = local_midnight(now, self.cfg.service.timezone)
-            best = self._collector.best_snr_with_sender_since(midnight)
-            best_snr, best_snr_node_id = best if best is not None else (None, None)
-            best_snr_node_name = self._report_display_name(best_snr_node_id)
-            max_hops_record = self._collector.max_hops_with_sender_since(midnight)
-            max_hops, max_hops_node_id = (
-                max_hops_record if max_hops_record is not None else (None, None)
-            )
-            max_hops_node_name = self._report_display_name(max_hops_node_id)
-            tz = self.cfg.service.timezone
-            furthest_observed = self._collector.furthest_observed_km_with_node_since(
-                midnight,
-                observatory_lat=self.cfg.observatory.latitude,
-                observatory_lon=self.cfg.observatory.longitude,
-                max_direct_km=self.cfg.observatory.max_direct_km,
-                max_km_per_hop=self.cfg.observatory.max_km_per_hop,
-                max_observed_km=self.cfg.observatory.max_observed_km,
-            )
-            furthest_observed_km, furthest_observed_node_id = (
-                furthest_observed if furthest_observed is not None else (None, None)
-            )
-            furthest_observed_node_name = self._report_display_name(furthest_observed_node_id)
-            return record_text(
-                best_snr=best_snr,
-                best_snr_node_id=best_snr_node_id,
-                best_snr_node_name=best_snr_node_name,
-                max_hops=max_hops,
-                max_hops_node_id=max_hops_node_id,
-                max_hops_node_name=max_hops_node_name,
-                busiest_hour=self._collector.busiest_hour_since(midnight, tz),
-                total_packets=self._collector.raw_events_since(midnight),
-                furthest_observed_km=furthest_observed_km,
-                furthest_observed_node_id=furthest_observed_node_id,
-                furthest_observed_node_name=furthest_observed_node_name,
+            return self._record_body(
+                self._collector, self._db_conn, now, self._transport.max_text_bytes,
                 companion_events=isinstance(self._transport, MeshCoreTransport),
-                max_bytes=self._transport.max_text_bytes,
             )
         if command == Command.WHO:
             return who_text(
@@ -3486,20 +3436,11 @@ class Daemon:
                         heard_24h=collector.distinct_senders_since(now - 86400),
                     )
                 elif command == Command.GARDEN:
-                    midnight = local_midnight(now, self.cfg.service.timezone)
-                    body = garden_text(
-                        self.cfg.service.name,
-                        nodes_today=collector.distinct_senders_since(midnight),
-                        heard_direct=collector.distinct_direct_senders_since(midnight),
-                        best_snr=collector.best_snr_since(now - 86400),
-                        guestbook_entries=self._guestbook.visible_count(),
-                        furthest_direct_km=collector.furthest_direct_km_since(
-                            midnight, **self._distance_limits()
-                        ),
-                        max_bytes=budget,
-                    )
+                    body = self._garden_body(collector, now, budget)
                 elif command == Command.RECORD:
-                    body = self._peer_record_body(collector, conn, mesh, now, budget)
+                    body = self._record_body(
+                        collector, conn, now, budget, companion_events=mesh == "meshcore"
+                    )
                 else:
                     raise AssertionError(f"command has no peer form: {command!r}")
         except sqlite3.Error:
@@ -3516,9 +3457,28 @@ class Daemon:
             "max_observed_km": obs_cfg.max_observed_km,
         }
 
-    def _peer_record_body(
-        self, collector: Collector, conn: sqlite3.Connection, mesh: str, now: int, budget: int
+    def _garden_body(self, collector: Collector, now: int, max_bytes: int) -> str:
+        """GARDEN text from `collector`'s observatory (own or peer)."""
+        midnight = local_midnight(now, self.cfg.service.timezone)
+        return garden_text(
+            self.cfg.service.name,
+            nodes_today=collector.distinct_senders_since(midnight),
+            heard_direct=collector.distinct_direct_senders_since(midnight),
+            best_snr=collector.best_snr_since(now - 86400),
+            guestbook_entries=self._guestbook.visible_count(),
+            furthest_direct_km=collector.furthest_direct_km_since(
+                midnight, **self._distance_limits()
+            ),
+            max_bytes=max_bytes,
+        )
+
+    def _record_body(
+        self, collector: Collector, conn: sqlite3.Connection, now: int, max_bytes: int,
+        *, companion_events: bool,
     ) -> str:
+        """RECORD text from `collector`'s observatory. Names come from
+        `conn`, the same database: a peer's bare ids must not be named from
+        this daemon's own `nodes`."""
         midnight = local_midnight(now, self.cfg.service.timezone)
         best = collector.best_snr_with_sender_since(midnight)
         best_snr, best_snr_node_id = best if best is not None else (None, None)
@@ -3528,8 +3488,6 @@ class Daemon:
             midnight, **self._distance_limits()
         )
         far_km, far_node_id = far if far is not None else (None, None)
-        # Names come from the peer's own `nodes`: this daemon's table would
-        # give the same bare id a different (or no) node's name.
         return record_text(
             best_snr=best_snr,
             best_snr_node_id=best_snr_node_id,
@@ -3542,8 +3500,8 @@ class Daemon:
             furthest_observed_km=far_km,
             furthest_observed_node_id=far_node_id,
             furthest_observed_node_name=lookup_node_name(conn, far_node_id),
-            companion_events=mesh == "meshcore",
-            max_bytes=budget,
+            companion_events=companion_events,
+            max_bytes=max_bytes,
         )
 
     def _peer_transport_name(self) -> str:

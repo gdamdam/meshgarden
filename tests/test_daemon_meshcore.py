@@ -1725,3 +1725,62 @@ def test_meshcore_guestbook_never_names_a_meshtastic_entry_from_its_nodes(
     reply = ft.fake.sent[-1]["msg"]
     assert "Alice" in reply and "Evil" not in reply
     assert "Carol" in reply  # this mesh's own entry still gets its current name
+
+
+# --- MT suffix: Meshtastic peer observatory read by a MeshCore daemon --------
+
+
+def _meshcore_peer_daemon(tmp_path, **service_kwargs):
+    from dataclasses import replace
+
+    from meshgarden.database import connect, migrate
+
+    peer = tmp_path / "peer.db"
+    pc = connect(str(peer))
+    migrate(pc)
+    now = int(time.time())
+    pc.execute(
+        "INSERT INTO nodes(node_id, short_name, long_name, observed_first_seen, "
+        "observed_last_seen) VALUES ('!c0ffee01', 'A-very-long-name', 'A very long name', 0, 0)"
+    )
+    pc.execute(
+        "INSERT INTO observations(server_time, sender_node_id, dest_node_id, channel, "
+        "portnum, packet_id, is_duplicate, rx_snr, hops_away, pki_encrypted) "
+        "VALUES (?, '!c0ffee01', '^all', 0, 'TEXT_MESSAGE_APP', 1, 0, 5.0, 3, 0)",
+        (now - 10,),
+    )
+    pc.commit()
+    pc.close()
+    cfg = _cfg(tmp_path, **service_kwargs)
+    cfg = replace(cfg, database=replace(cfg.database, peer_path=str(peer)))
+    return _start_meshcore_daemon(cfg)
+
+
+@pytest.mark.parametrize("text", ["RECORD MT", "GARDEN MT"])
+def test_meshcore_peer_reply_fits_the_120_byte_budget_with_label(tmp_path, text):
+    d, ft = _meshcore_peer_daemon(tmp_path)
+    try:
+        ft.fake.emit_new_contact(VISITOR_PUBKEY, "visitor")
+        ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], text)
+        d.drain()
+        assert len(ft.fake.sent) == 1
+        msg = ft.fake.sent[0]["msg"]
+        assert msg.endswith(" (Meshtastic)")
+        assert len(msg.encode("utf-8")) <= 120
+    finally:
+        d.stop()
+
+
+def test_channel_mode_accepts_garden_with_peer_suffix(tmp_path):
+    # GARDEN (unlike WHO) is in _CHANNEL_PUBLIC_COMMANDS; the suffix does
+    # not change that either way.
+    d, ft = _meshcore_peer_daemon(tmp_path, mode="channel", mail_public=True)
+    try:
+        ft.fake.emit_new_contact(VISITOR_PUBKEY, "visitor")
+        ft.fake.emit_channel_message_from(0, "visitor", "GARDEN MT")
+        d.drain()
+        assert ft.fake.sent == []
+        assert len(ft.fake.channel_sent) == 1
+        assert ft.fake.channel_sent[0]["msg"].endswith("(Meshtastic)")
+    finally:
+        d.stop()
