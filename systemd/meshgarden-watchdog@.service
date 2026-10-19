@@ -1,0 +1,46 @@
+# External radio watchdog: one poll of the daemon's metrics endpoint, which
+# alerts (and optionally power-cycles the radio) when the node has gone
+# deaf. Driven by meshgarden-watchdog.timer; see docs/operations.md.
+#
+# WHY THIS IS SEPARATE FROM THE DAEMON: a dead radio leaves the daemon's
+# reconnect thread perfectly healthy -- looping, beating, backing off, with
+# nothing to talk to -- so worker heartbeats report all-clear and the
+# daemon's own Type=notify watchdog has nothing to trip on. Polling from
+# outside also catches a daemon that has died or hung outright, which by
+# definition cannot report on its own behalf.
+[Unit]
+Description=Meshgarden radio watchdog (%i)
+After=network-online.target meshgarden@%i.service
+
+[Service]
+Type=oneshot
+# Runs as root deliberately, for two reasons: uhubctl needs root to switch
+# USB port power, and the ntfy URL in the EnvironmentFile below is a shared
+# secret kept root-only (0600). It holds no open sockets and does one short
+# HTTP GET to loopback per minute.
+User=root
+# Optional (the leading "-"): with no env file the watchdog still polls and
+# still power-cycles, it just cannot page anyone.
+EnvironmentFile=-/etc/meshgarden/watchdog.env
+ExecStart=/usr/local/bin/mgarden --config /etc/meshgarden/%i.toml radio-watchdog
+TimeoutStartSec=120
+# Hardening: it needs loopback HTTP, /dev/bus/usb (uhubctl) and its own
+# state file under /var/lib/meshgarden, and nothing else.
+NoNewPrivileges=yes
+# read-only, NOT yes: the supported install runs Meshgarden in place from a
+# checkout under the operator's home (see docs/operations.md "Raspberry Pi
+# installation"), so ProtectHome=yes hides the very venv this ExecStart
+# invokes and the unit dies with status=127 "No such file or directory".
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/meshgarden
+PrivateTmp=yes
+# AF_NETLINK is required: libusb opens a netlink socket for udev hotplug
+# monitoring during init, and without it uhubctl fails with
+# "Error initializing USB!" so the power cycle never happens.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

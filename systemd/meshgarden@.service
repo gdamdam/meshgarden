@@ -1,0 +1,56 @@
+# Per-instance unit (meshgarden@NAME.service) for running a second radio beside
+# the default meshgarden.service. Reads /etc/meshgarden/NAME.toml and shares
+# the same user and StateDirectory (/var/lib/meshgarden) so every instance can
+# open the shared bbs.db; keep per-instance state in /var/lib/meshgarden/NAME/.
+# Installed by `install-rpi.sh --instance NAME`; see docs/operations.md.
+[Unit]
+Description=Meshgarden (%i) - mesh BBS + Observatory
+After=network.target
+
+[Service]
+Type=notify
+User=meshgarden
+Group=meshgarden
+SupplementaryGroups=dialout
+# __CHECKOUT__ is rendered to the actual repo checkout path by
+# scripts/install-rpi.sh at install time; ExecStart/WorkingDirectory are
+# always absolute, with no reliance on PATH.
+ExecStart=__CHECKOUT__/.venv/bin/mgarden --config /etc/meshgarden/%i.toml run
+WorkingDirectory=__CHECKOUT__
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+# The daemon sends READY=1 once at startup and WATCHDOG=1 every
+# WATCHDOG_USEC/2 from its main loop (see run_forever/_sd_notify in
+# main.py) -- but ONLY while every worker (DB, TX, radio, maintenance)
+# heartbeat is fresh. It stops pinging the moment any one worker stalls,
+# so systemd's own WatchdogSec timeout below restarts the unit exactly as
+# if the process had hung outright. No effect on a plain `Type=simple`
+# checkout of this file: both lines are additive and require no new
+# dependency (sd_notify is a ~20-line AF_UNIX datagram, not the optional
+# `sdnotify` package).
+WatchdogSec=120
+StateDirectory=meshgarden
+StateDirectoryMode=0750
+ConfigurationDirectory=meshgarden
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# read-only, not true: the documented install runs in place from a checkout
+# under the repo owner's home directory (e.g. ~/meshgarden), which "true"
+# would hide entirely from ExecStart/WorkingDirectory. State still only
+# ever lives under /var/lib/meshgarden (ReadWritePaths below); /home stays
+# read-only to this service. install-rpi.sh pre-flights that the service
+# user can actually traverse into the checkout despite this.
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-ttyACM rw
+ReadWritePaths=/var/lib/meshgarden
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target

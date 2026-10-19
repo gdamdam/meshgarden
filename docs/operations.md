@@ -7,6 +7,7 @@ privacy and quota details in [security-and-privacy.md](security-and-privacy.md).
 ## Contents
 
 - [Install and upgrade](#install-and-upgrade)
+- [Two radios (shared garden)](#two-radios-shared-garden)
 - [Connecting the radio](#connecting-the-radio)
 - [How visitors reach the node](#how-visitors-reach-the-node)
 - [Daily checks](#daily-checks)
@@ -161,6 +162,54 @@ keep working unchanged.
 [configuration.md](configuration.md)). When a worker stalls, it stops pinging and systemd
 restarts the unit as if the process had hung. It needs no extra dependency, and does nothing under
 a unit without `NOTIFY_SOCKET` / `WATCHDOG_USEC`.
+
+## Two radios (shared garden)
+
+A MeshCore and a Meshtastic daemon can serve one BBS (guestbook, news, mail, games) from a single
+Pi. The default instance (`meshgarden.service`, `/etc/meshgarden/config.toml`) is unchanged; add a
+second one with:
+
+```bash
+sudo ./scripts/install-rpi.sh --instance mt --transport meshtastic
+```
+
+This installs the `meshgarden@.service` template, seeds `/etc/meshgarden/mt.toml` from
+`config.example.toml` if absent (an existing file is never overwritten), creates
+`/var/lib/meshgarden/mt/`, and enables `meshgarden@mt` without starting it. Both instances run as
+the `meshgarden` user and share `/var/lib/meshgarden`.
+
+```
+/var/lib/meshgarden/bbs.db                 shared BBS (both daemons)
+/var/lib/meshgarden/observatory.db         default instance (MeshCore)
+/var/lib/meshgarden/mt/observatory.db      mt instance (Meshtastic)
+```
+
+Edit `/etc/meshgarden/mt.toml` (radio device, `expected_node_id`, `transport`, a distinct
+`[metrics] port` and `[web] port`, `[backup] directory`) and point both configs at the shared files:
+
+```toml
+# /etc/meshgarden/config.toml (default, MeshCore)
+[database]
+bbs_path = "/var/lib/meshgarden/bbs.db"
+peer_path = "/var/lib/meshgarden/mt/observatory.db"
+
+# /etc/meshgarden/mt.toml
+[database]
+path = "/var/lib/meshgarden/mt/observatory.db"
+bbs_path = "/var/lib/meshgarden/bbs.db"
+peer_path = "/var/lib/meshgarden/observatory.db"
+```
+
+- **Start order.** Start the instance that already holds data first (normally the default one):
+  on first start with `bbs_path` set it splits the BBS tables out of its observatory database
+  into `bbs.db`. Then start `sudo systemctl start meshgarden@mt`.
+- **Watchdog.** `meshgarden-watchdog@.service` / `.timer` are per-instance copies of the radio
+  watchdog using `/etc/meshgarden/%i.toml`; install and enable like the default watchdog:
+  `sudo systemctl enable --now meshgarden-watchdog@mt.timer`.
+- **Backups and restore.** Back up both instances; the BBS is in `bbs.db`. Stop both daemons
+  before restoring `bbs.db`.
+- **Rollback.** Once the split has happened, rolling back to 1.x requires restoring the
+  pre-upgrade backup; 1.x does not know about `bbs.db`.
 
 ## Connecting the radio
 

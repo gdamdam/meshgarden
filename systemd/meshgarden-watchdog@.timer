@@ -1,0 +1,19 @@
+# Polls once a minute. The watchdog's own grace period (default 300s, see
+# MESHGARDEN_WATCHDOG_GRACE_SECONDS) is what prevents a brief reconnect --
+# the radio re-enumerates on any config change from the phone app -- from
+# paging the operator, so polling frequently here is cheap and does not
+# make the alerts noisy.
+[Unit]
+Description=Poll the Meshgarden radio watchdog (%i) every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+# Deliberately NOT Persistent=true: a missed poll while the host was off is
+# not worth catching up on, and a burst of catch-up runs at boot could
+# power-cycle the radio before the daemon has had a chance to connect.
+Unit=meshgarden-watchdog@%i.service
+
+[Install]
+WantedBy=timers.target

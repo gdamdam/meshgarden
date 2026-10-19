@@ -26,6 +26,7 @@ UNIT_DEST="/etc/systemd/system/$UNIT_NAME"
 REQUIRED_APT_PKGS=(python3 python3-venv git curl ca-certificates sqlite3)
 
 REPO_USER="${SUDO_USER:-}"
+INSTANCE=""
 DEVICE_PATH=""
 INSTALL_DIR=""
 WEB_LISTEN=""
@@ -35,6 +36,7 @@ NO_ENABLE=0
 SKIP_APT=0
 SKIP_UV_INSTALL=0
 FORCE_CONFIG=0
+CONFIG_PATH_SET=0
 NO_CONFIG_SYNC=0
 FIX_HOME_TRAVERSAL=0
 RESET_DATA=0
@@ -94,7 +96,20 @@ Options:
                         existing MeshCore deployment without repeating
                         this flag.
   --config PATH          Path to the config file to create/use
-                        (default: /etc/meshgarden/config.toml).
+                        (default: /etc/meshgarden/config.toml, or
+                        /etc/meshgarden/NAME.toml with --instance).
+  --instance NAME        Install/refresh an additional daemon instance beside
+                        the default one, for a second radio sharing the same
+                        BBS (docs/operations.md, "Two radios"). Installs the
+                        meshgarden@.service template, seeds
+                        /etc/meshgarden/NAME.toml from config.example.toml if
+                        absent (an existing one is never overwritten), keeps
+                        its state under /var/lib/meshgarden/NAME/, and
+                        enables/starts meshgarden@NAME. Prints the config
+                        keys you must still edit (device, node id, ports,
+                        bbs_path/peer_path). The default meshgarden.service
+                        is not touched. NAME: lowercase letters, digits, "-",
+                        "_". Not combinable with --reset-data.
   --web-listen ADDR      Enable the read-only web dashboard and bind it to
                         ADDR (IPv4/IPv6 literal or 0.0.0.0). When the
                         config is being (re)generated (first install or
@@ -187,7 +202,8 @@ while [ $# -gt 0 ]; do
         --user) require_arg "$1" "${2:-}"; REPO_USER="$2"; shift 2 ;;
         --device) require_arg "$1" "${2:-}"; DEVICE_PATH="$2"; shift 2 ;;
         --transport) require_arg "$1" "${2:-}"; TRANSPORT="$2"; shift 2 ;;
-        --config) require_arg "$1" "${2:-}"; CONFIG_PATH="$2"; shift 2 ;;
+        --config) require_arg "$1" "${2:-}"; CONFIG_PATH="$2"; CONFIG_PATH_SET=1; shift 2 ;;
+        --instance) require_arg "$1" "${2:-}"; INSTANCE="$2"; shift 2 ;;
         --web-listen) require_arg "$1" "${2:-}"; WEB_LISTEN="$2"; shift 2 ;;
         --install-dir) require_arg "$1" "${2:-}"; INSTALL_DIR="$2"; shift 2 ;;
         --no-start) NO_START=1; shift ;;
@@ -217,6 +233,24 @@ fi
 
 if [ "$DEBUG" -eq 1 ]; then
     warn "NOTICE: --debug installs the service running \`mgarden run --debug\`: the DM/reply exchange trace writes every DM's raw text (guestbook/mail bodies, the LAB unlock word) to stderr, which this unit sends to the journal, where it persists, and it also lands in the rotated exchange file under the logs dir (<database dir>/logs/exchange.log). For troubleshooting only -- re-run this installer WITHOUT --debug to turn it off, and use \`journalctl --vacuum-time=<duration>\` to drop old trace lines."
+fi
+
+if [ -n "$INSTANCE" ]; then
+    if ! printf '%s' "$INSTANCE" | grep -Eq '^[a-z0-9][a-z0-9_-]*$'; then
+        err "--instance NAME must be lowercase letters, digits, \"-\" or \"_\", got: $INSTANCE"
+        exit 2
+    fi
+    if [ "$RESET_DATA" -eq 1 ]; then
+        err "--reset-data cannot be combined with --instance: it wipes the whole state directory, including the BBS shared with the other instance."
+        exit 2
+    fi
+    if [ "$CONFIG_PATH_SET" -eq 0 ]; then
+        CONFIG_PATH="/etc/meshgarden/$INSTANCE.toml"
+    fi
+    UNIT_NAME="meshgarden@$INSTANCE.service"
+    UNIT_SRC="$REPO_DIR/systemd/meshgarden@.service"
+    # The template file is installed once; instances are enabled by name.
+    UNIT_DEST="/etc/systemd/system/meshgarden@.service"
 fi
 
 CONFIG_DIR="$(dirname "$CONFIG_PATH")"
@@ -475,11 +509,20 @@ UV_BIN_Q="$(printf '%q' "$UV_BIN")"
 # source present: "meshtastic", same as today -- no behavior change for a
 # Meshtastic-only install.
 EFFECTIVE_TRANSPORT="$TRANSPORT"
-if [ -z "$EFFECTIVE_TRANSPORT" ] && [ -e "$CONFIG_PATH" ] \
-    && grep -Eq '^[[:space:]]*transport[[:space:]]*=[[:space:]]*"meshcore"' "$CONFIG_PATH"; then
-    EFFECTIVE_TRANSPORT="meshcore"
-    log "detected transport = \"meshcore\" in existing $CONFIG_PATH"
+# With --instance, the default instance's config is checked too: `uv sync`
+# without the extra would uninstall meshcore from the venv the default
+# MeshCore daemon is running from.
+MESHCORE_CHECK_PATHS=("$CONFIG_PATH")
+if [ -n "$INSTANCE" ]; then
+    MESHCORE_CHECK_PATHS+=("/etc/meshgarden/config.toml")
 fi
+for mc_path in "${MESHCORE_CHECK_PATHS[@]}"; do
+    if [ -z "$EFFECTIVE_TRANSPORT" ] && [ -e "$mc_path" ] \
+        && grep -Eq '^[[:space:]]*transport[[:space:]]*=[[:space:]]*"meshcore"' "$mc_path"; then
+        EFFECTIVE_TRANSPORT="meshcore"
+        log "detected transport = \"meshcore\" in existing $mc_path"
+    fi
+done
 UV_SYNC_EXTRA=""
 if [ "$EFFECTIVE_TRANSPORT" = "meshcore" ]; then
     UV_SYNC_EXTRA=" --extra meshcore"
@@ -573,6 +616,15 @@ else
     run chown "$SERVICE_USER:$SERVICE_GROUP" "$STATE_DIR/backups"
 fi
 run chmod 0750 "$STATE_DIR"
+# Instance state (observatory.db, backups) lives beside the shared bbs.db,
+# private to the service user like the daemon's own 0700 DB dir.
+INSTANCE_STATE_DIR="$STATE_DIR"
+if [ -n "$INSTANCE" ]; then
+    INSTANCE_STATE_DIR="$STATE_DIR/$INSTANCE"
+    run mkdir -p "$INSTANCE_STATE_DIR/backups"
+    run chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTANCE_STATE_DIR"
+    run chmod 0700 "$INSTANCE_STATE_DIR"
+fi
 
 # -----------------------------------------------------------------------
 # Radio device discovery
@@ -632,8 +684,8 @@ run mkdir -p "$CONFIG_DIR"
 # should silently add.
 render_config_base_template() {
     sed \
-        -e "s|/var/lib/meshtastic-observatory/observatory.db|$STATE_DIR/observatory.db|" \
-        -e "s|/var/lib/meshtastic-observatory/backups|$STATE_DIR/backups|" \
+        -e "s|/var/lib/meshtastic-observatory/observatory.db|$INSTANCE_STATE_DIR/observatory.db|" \
+        -e "s|/var/lib/meshtastic-observatory/backups|$INSTANCE_STATE_DIR/backups|" \
         "$REPO_DIR/config.example.toml" > "$1"
     if [ -n "$SELECTED_DEVICE" ]; then
         sed -i.bak "s|/dev/serial/by-id/REPLACE_WITH_YOUR_RADIO|$SELECTED_DEVICE|" "$1"
@@ -827,6 +879,14 @@ else
     exit 1
 fi
 
+# A just-seeded instance config still holds the example's placeholder device
+# and the default ports/paths, which would clash with the running default
+# instance; enable the unit but leave starting it to the operator.
+if [ -n "$INSTANCE" ] && [ "$CONFIG_IS_NEW" -eq 1 ] && [ "$NO_START" -eq 0 ]; then
+    log "instance $INSTANCE: new config needs editing first; enabling $UNIT_NAME but not starting it"
+    NO_START=1
+fi
+
 # -----------------------------------------------------------------------
 # systemd unit
 # -----------------------------------------------------------------------
@@ -943,12 +1003,32 @@ print_web_summary() {
     fi
 }
 
+# The example config cannot know the second radio, so a freshly seeded
+# instance config still needs these edited before the daemon is useful.
+print_instance_notice() {
+    [ -n "$INSTANCE" ] || return 0
+    if [ "$CONFIG_IS_NEW" -eq 1 ]; then
+        warn "instance $INSTANCE: edit $CONFIG_PATH before relying on it:"
+        warn "  [radio]    device, expected_node_id, transport"
+        warn "  [database] path = \"$INSTANCE_STATE_DIR/observatory.db\""
+        warn "  [database] bbs_path = \"$STATE_DIR/bbs.db\"   (same value in every instance)"
+        warn "  [database] peer_path = <the other instance's observatory.db>"
+        warn "  [backup]   directory = \"$INSTANCE_STATE_DIR/backups\""
+        warn "  [metrics]  port (distinct per instance; default instance uses 9108)"
+        warn "  [web]      enabled / port (distinct per instance; default uses 9109)"
+        warn "then: sudo systemctl start $UNIT_NAME (not started yet). Start the instance that holds existing data first."
+    else
+        log "instance $INSTANCE: existing $CONFIG_PATH left untouched"
+    fi
+}
+
 # -----------------------------------------------------------------------
 # Validation
 # -----------------------------------------------------------------------
 if [ "$DRY_RUN" -eq 1 ]; then
     log "dry-run complete; no changes were made"
     print_web_summary
+    print_instance_notice
     exit 0
 fi
 
@@ -995,3 +1075,4 @@ log "  logs:    journalctl -u $UNIT_NAME -f"
 log "  mgarden status / mgarden doctor now work from any shell (/usr/local/bin/mgarden)"
 
 print_web_summary
+print_instance_notice
