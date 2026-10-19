@@ -126,10 +126,7 @@ def test_menu_fits_the_byte_budget_and_lists_top_level_commands():
         "NEW",
         "NEWS",
         "GUIDE",
-        "MENU SOCIAL",
-        "MENU STATS",
-        "MENU GAMES",
-        "MENU DAILY",
+        "MENU SOCIAL|STATS|GAMES|DAILY",
     ):
         assert cmd in t
 

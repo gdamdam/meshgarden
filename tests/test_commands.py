@@ -633,10 +633,8 @@ def test_menu_top_level_fits_the_budget_and_points_to_all_sub_pages():
     text = menu_text()
     assert b(text) <= 180
     assert "SIGN" in text and "GUESTBOOK" in text and "NEW" in text
-    assert "MENU STATS" in text
-    assert "MENU GAMES" in text
-    assert "MENU DAILY" in text
-    assert "MENU SOCIAL" in text
+    # One line names every sub-page (each still typed as MENU <page>).
+    assert "MENU SOCIAL|STATS|GAMES|DAILY" in text
 
 
 def test_menu_top_level_no_longer_mentions_boards():
@@ -658,10 +656,10 @@ def test_menu_text_locked_fits_meshcore_without_revealing_lab():
 def test_menu_text_lab_unlocked_adds_the_lab_line():
     text = menu_text(lab_unlocked=True)
     assert b(text + quota_hint_suffix(999, 999)) <= 120
-    assert "MENU SOCIAL" in text.splitlines()
+    assert "MENU SOCIAL|STATS|GAMES|DAILY" in text.splitlines()
     assert "MENU LAB" in menu_reply_for("SOCIAL", lab_unlocked=True)
     assert "INFO" in menu_reply_for("SOCIAL", lab_unlocked=True)
-    for cmd in ("SIGN", "GUESTBOOK", "NEW", "MENU STATS", "MENU GAMES", "MENU DAILY"):
+    for cmd in ("SIGN", "GUESTBOOK", "NEW", "MENU SOCIAL|STATS|GAMES|DAILY"):
         assert cmd in text
 
 
@@ -1627,6 +1625,10 @@ def test_menu_shared_header_names_only_the_other_mesh_and_never_cuts_lines():
     assert out.splitlines()[1:] == _MENU_TEXT.splitlines()[1:]
     assert "Meshtastic" not in out
     assert menu_with_shared_header(_MENU_TEXT, shared_with=None, max_bytes=180) == _MENU_TEXT
-    # No room (MeshCore's 120 bytes with the quota hint): the menu is unchanged.
-    assert menu_with_shared_header(_MENU_TEXT, shared_with="Meshtastic", max_bytes=120,
+    # MeshCore's 120 bytes with the quota hint: the short form.
+    short = menu_with_shared_header(_MENU_TEXT, shared_with="Meshtastic", max_bytes=120,
+                                    reserve=22)
+    assert short.splitlines()[0] == "🌱 MeshGarden ⇄ Meshtastic"
+    # No room at all: unchanged, never a cut menu line.
+    assert menu_with_shared_header(_MENU_TEXT, shared_with="Meshtastic", max_bytes=90,
                                    reserve=22) == _MENU_TEXT

@@ -1045,10 +1045,8 @@ _MENU_TEXT = (
     "🌱 MeshGarden\n"
     "NEW NEWS GUIDE\n"
     "SIGN <msg> GUESTBOOK\n"
-    "MENU SOCIAL\n"
-    "MENU STATS\n"
-    "MENU GAMES\n"
-    "MENU DAILY"
+    # One line for the four sub-pages: still typed as MENU SOCIAL etc.
+    "MENU SOCIAL|STATS|GAMES|DAILY"
 )
 
 _CHANNEL_MENU_TEXT = (
@@ -1191,9 +1189,11 @@ def menu_with_shared_header(
     if not shared_with:
         return menu
     first, sep, rest = menu.partition("\n")
-    candidate = f"{first} · shared with {shared_with}" + sep + rest
-    if len(candidate.encode("utf-8")) + reserve <= max_bytes:
-        return candidate
+    # The short form keeps the cue on MeshCore's 120-byte budget.
+    for title in (f"{first} · shared with {shared_with}", f"{first} ⇄ {shared_with}"):
+        candidate = title + sep + rest
+        if len(candidate.encode("utf-8")) + reserve <= max_bytes:
+            return candidate
     return menu
 
 

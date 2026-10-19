@@ -1,6 +1,6 @@
 [project]
 name = "meshgarden"
-version = "1.12.3"
+version = "1.12.4"
 description = "Meshgarden - a MeshCore-first LoRa BBS with Meshtastic support"
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-only" }

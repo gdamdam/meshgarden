@@ -69,7 +69,7 @@ def test_main_menu_keeps_all_commands_with_three_digit_quota(unlocked):
     reply = with_quota_hint(base, 999, 999, max_bytes=120)
     assert reply == base + quota_hint_suffix(999, 999)
     assert len(reply.encode("utf-8")) <= 120
-    assert reply.endswith("MENU DAILY · quota 999/999 today")
+    assert reply.endswith("MENU SOCIAL|STATS|GAMES|DAILY · quota 999/999 today")
 
 
 def test_command_help_and_lab_unlock_also_fit_meshcore():

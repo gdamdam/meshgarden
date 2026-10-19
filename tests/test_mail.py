@@ -194,4 +194,4 @@ def test_shared_meshtastic_menu_says_shared_with_meshcore(shared_daemon):
     _dm(shared_daemon, "MENU", 9590)
     text = shared_daemon.iface.sent[-1]["text"]
     assert text.splitlines()[0] == "🌱 MeshGarden · shared with MeshCore"
-    assert "MENU DAILY" in text and "quota" in text
+    assert "MENU SOCIAL|STATS|GAMES|DAILY" in text and "quota" in text

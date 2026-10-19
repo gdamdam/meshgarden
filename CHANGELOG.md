@@ -9,6 +9,15 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.12.4] - 2026-10-19
+
+### Changed
+
+- The top-level `MENU` lists its four sub-pages on one line (`MENU SOCIAL|STATS|GAMES|DAILY`);
+  each is still typed as `MENU <page>`. With the space saved, MeshCore's 120-byte menu also names
+  the shared mesh, in the short form `🌱 MeshGarden ⇄ Meshtastic` (Meshtastic keeps
+  `· shared with MeshCore`). The quota hint stays on both.
+
 ## [1.12.3] - 2026-10-19
 
 ### Changed
