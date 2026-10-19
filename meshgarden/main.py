@@ -697,7 +697,7 @@ class Daemon:
         # Never touched by either worker thread.
         self.conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
-        migrate(self.conn, transport=cfg.radio.transport)
+        migrate(self.conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         # Maintenance can run in operator/tests without starting worker
         # threads. The DB worker replaces this with its thread-owned helper
         # on start, matching the other runtime database helpers.
@@ -4945,7 +4945,7 @@ def cmd_guestbook_hide(cfg: Config, entry_id: int, *, topic: str | None = None) 
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         row = conn.execute("SELECT topic FROM guestbook WHERE entry_id=?", (entry_id,)).fetchone()
         if row is None:
             print(f"guestbook entry not found: {entry_id}", file=sys.stderr)
@@ -4967,7 +4967,7 @@ def cmd_guestbook_delete(cfg: Config, entry_id: int, *, topic: str | None = None
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         row = conn.execute("SELECT topic FROM guestbook WHERE entry_id=?", (entry_id,)).fetchone()
         if row is None:
             print(f"guestbook entry not found: {entry_id}", file=sys.stderr)
@@ -4993,7 +4993,7 @@ def cmd_block(cfg: Config, node_id: str) -> int:
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         now = int(time.time())
         with conn:
             conn.execute(
@@ -5016,7 +5016,7 @@ def cmd_unblock(cfg: Config, node_id: str) -> int:
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         with conn:
             cur = conn.execute("DELETE FROM blocked_senders WHERE node_id=?", (node_id,))
             deleted = cur.rowcount
@@ -5153,7 +5153,7 @@ def cmd_backup(cfg: Config) -> int:
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         retention = Retention(conn, cfg.retention, cfg.backup, log_dir=_log_dir_for(cfg))
         path = retention.backup(int(time.time()))
         if path is None:

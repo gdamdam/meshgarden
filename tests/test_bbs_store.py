@@ -185,6 +185,57 @@ def test_mail_id_sequence_not_reused_after_split(paths):
     assert conn.execute("SELECT max(id) FROM mail").fetchone()[0] == 3
 
 
+def test_mail_id_sequence_carried_when_all_mail_was_collected(paths):
+    """Empty mail table, surviving reply route: a new note must not reuse
+    id 1, or REPLY #1 would resolve to the old sender."""
+    main_path, bbs_path = paths
+    _legacy(main_path, mail=[("!0000aaaa", "!0000bbbb")])
+    conn = connect(main_path)
+    conn.execute(
+        "INSERT INTO mail_reply_routes(mail_id, sender_node_id, recipient_node_id, expires_at) "
+        "VALUES (1, '!0000aaaa', '!0000bbbb', 9999999999)"
+    )
+    conn.execute("DELETE FROM mail")
+    conn.commit()
+    conn.close()
+    conn = _split(main_path, bbs_path)
+    conn.execute(
+        "INSERT INTO mail(created_at, sender_node_id, recipient_node_id, message, message_hash) "
+        "VALUES (2, '!0000cccc', '!0000bbbb', 'n', 'h')"
+    )
+    assert conn.execute("SELECT max(id) FROM mail").fetchone()[0] == 2
+
+
+def test_meshcore_game_state_rekeyed_to_qualified_id(paths):
+    from meshgarden.wordle import player_key
+
+    main_path, bbs_path = paths
+    _legacy(main_path)
+    conn = connect(main_path)
+    conn.execute(
+        "INSERT INTO nodes(node_id, observed_first_seen, observed_last_seen) "
+        "VALUES ('!e4d495e4', 1, 1)"
+    )
+    old = player_key("!e4d495e4", "2026-10-19", "salt")
+    conn.execute(
+        "INSERT INTO wordle_state(player_key, day, guesses, solved, updated_at) "
+        "VALUES (?, '2026-10-19', 3, 1, 1)",
+        (old,),
+    )
+    conn.execute(
+        "INSERT INTO book_state(player_key, day, solved, updated_at) "
+        "VALUES (?, '2026-10-19', 1, 1)",
+        (old,),
+    )
+    conn.commit()
+    conn.close()
+    conn = connect(main_path, bbs_path=bbs_path, transport="meshcore")
+    migrate(conn, transport="meshcore", salt="salt")
+    new = player_key("mc:!e4d495e4", "2026-10-19", "salt")
+    for table in ("wordle_state", "book_state"):
+        assert [r[0] for r in conn.execute(f"SELECT player_key FROM {table}")] == [new]
+
+
 def test_run_reports_split_conflict_without_traceback(monkeypatch, capsys):
     from meshgarden import main
 

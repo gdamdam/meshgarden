@@ -374,7 +374,7 @@ def cmd_guestbook_approve(cfg: Config, entry_id: int, *, topic: str | None = Non
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         row = conn.execute(
             "SELECT visible, moderation_reason, topic FROM guestbook WHERE entry_id=?", (entry_id,)
         ).fetchone()
@@ -486,7 +486,7 @@ def cmd_mail_purge(cfg: Config, node_id: str) -> int:
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         label = _bbs_node_label(conn, node_id)
         with conn:
             cur = conn.execute("DELETE FROM mail WHERE recipient_node_id=?", (node_id,))
@@ -529,7 +529,7 @@ def cmd_mail_alias_set(
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         status = MailAliases(conn).operator_set(
             parsed, alias, int(time.time()), replace=replace_existing
         )
@@ -563,7 +563,7 @@ def cmd_mail_alias_release(cfg: Config, alias: str) -> int:
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         if not MailAliases(conn).operator_release(normalized, int(time.time())):
             print(f"alias not found: @{normalized}", file=sys.stderr)
             return 3
@@ -708,7 +708,7 @@ def cmd_positions_delete(
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         deleted = positions.delete_dm_positions(
             conn, ids=ids or None, id_range=parsed_range, node_id=node_id,
             since=since, until=until,
@@ -736,7 +736,7 @@ def cmd_lab_revoke(cfg: Config, node_id: str) -> int:
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         label = _bbs_node_label(conn, node_id)
         with conn:
             cur = conn.execute("DELETE FROM lab_nodes WHERE node_id=?", (node_id,))
@@ -784,7 +784,7 @@ def cmd_quota_reset(
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         resolved, matches = _resolve_quota_node(conn, node_id)
         if resolved is None:
             return _report_quota_node_error(node_id, matches)
@@ -831,7 +831,7 @@ def cmd_quota_reset_all(cfg: Config) -> int:
     conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
         transport=cfg.radio.transport)
     try:
-        migrate(conn, transport=cfg.radio.transport)
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
         with conn:
             cur = conn.execute("DELETE FROM node_daily_quota")
         print(

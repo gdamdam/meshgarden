@@ -9,6 +9,23 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-10-19
+
+### Fixed
+
+- Shared-BBS split no longer restarts an empty table's id sequence: with every
+  note collected, new mail reused old ids and `REPLY #1` could reach the
+  previous sender through a surviving reply route.
+- Retention no longer prunes MeshCore guestbook authors from `nodes` after the
+  split (guestbook ids are now `mc:`-qualified); their names and name-based
+  mail recipients survive.
+- The split re-keys a MeshCore instance's same-day WORDLE/BOOK state to the
+  qualified id, so a player can't solve twice and inflate the day's totals.
+- `install-rpi.sh --reset-data` refuses while another instance config exists:
+  it would have wiped that instance's state, its backups and the shared
+  `bbs.db` under its running daemon.
+- A failed restore removes its temporary copy's `-wal`/`-shm` sidecars.
+
 ## [1.11.0] - 2026-10-19
 
 ### Added

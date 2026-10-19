@@ -520,7 +520,9 @@ def get_schema_version(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA user_version").fetchone()[0]
 
 
-def migrate(conn: sqlite3.Connection, *, transport: str = "meshtastic") -> int:
+def migrate(
+    conn: sqlite3.Connection, *, transport: str = "meshtastic", salt: str = ""
+) -> int:
     """Apply pending migrations. Idempotent.
 
     Each migration's DDL and its `user_version` bump run as a single
@@ -532,7 +534,9 @@ def migrate(conn: sqlite3.Connection, *, transport: str = "meshtastic") -> int:
 
     With a `bbs` schema attached, the BBS tables are then moved into the
     shared file (bbs_store.ensure_split); `transport` decides whether their
-    node ids get the `mc:` qualifier. The returned version is main's.
+    node ids get the `mc:` qualifier, and `salt` (service.fortune_salt) lets
+    MeshCore game state be re-keyed to the qualified id. The returned version
+    is main's.
     """
     current = get_schema_version(conn)
     for version, sql in MIGRATIONS:
@@ -545,7 +549,7 @@ def migrate(conn: sqlite3.Connection, *, transport: str = "meshtastic") -> int:
                 raise
             current = version
     if bbs_store.is_attached(conn):
-        bbs_store.ensure_split(conn, transport)
+        bbs_store.ensure_split(conn, transport, salt)
     else:
         bbs_store.assert_not_split(conn)
     return current

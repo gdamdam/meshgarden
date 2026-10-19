@@ -818,6 +818,38 @@ def test_install_dry_run_reset_data_refuses_when_config_is_under_state_dir():
         assert "would run: rm" not in result.stdout
 
 
+def test_install_dry_run_reset_data_refuses_when_another_instance_exists():
+    """A second instance's config means STATE_DIR also holds its <name>/
+    state and backups plus the shared bbs.db: resetting the default
+    instance must refuse rather than wipe them under a running peer."""
+    with tempfile.TemporaryDirectory() as state_dir, tempfile.TemporaryDirectory() as cfg_dir:
+        config_path = os.path.join(cfg_dir, "config.toml")
+        with open(os.path.join(cfg_dir, "mt.toml"), "w") as f:
+            f.write('[radio]\ntransport = "meshtastic"\n')
+        env = _dry_run_env()
+        env["MESHGARDEN_INSTALL_STATE_DIR"] = state_dir
+        result = subprocess.run(
+            [
+                INSTALL_SCRIPT,
+                "--dry-run",
+                "--skip-apt",
+                "--skip-uv-install",
+                "--no-start",
+                "--no-enable",
+                "--config",
+                config_path,
+                "--reset-data",
+                "--yes",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "mt.toml" in result.stdout + result.stderr
+        assert "would run: rm" not in result.stdout
+
+
 def test_install_dry_run_without_reset_data_plans_no_state_removal():
     result = subprocess.run(
         [

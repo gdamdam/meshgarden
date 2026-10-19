@@ -558,6 +558,15 @@ if [ "$RESET_DATA" -eq 1 ]; then
             exit 1
             ;;
     esac
+    # Another instance's config means $STATE_DIR also holds that instance's
+    # state and backups (<name>/) and the shared bbs.db, while its daemon may
+    # still be running: the removal loop below would wipe all of it.
+    for other in "$CONFIG_DIR"/*.toml; do
+        [ -e "$other" ] || continue
+        [ "$other" = "$CONFIG_PATH" ] && continue
+        err "--reset-data refused: instance config $other shares $STATE_DIR (its state, its backups and the shared bbs.db). Stop and remove that instance first, or reset files by hand."
+        exit 1
+    done
     log "--reset-data: will wipe $STATE_DIR (database + daemon state), keeping backups/; config is never touched"
     if [ "$DRY_RUN" -eq 0 ] && [ "$ASSUME_YES" -ne 1 ]; then
         printf 'This will permanently delete the database and all other daemon state under %s (keeping %s/backups; %s is never touched). Type "yes" to continue: ' \

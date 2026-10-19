@@ -15,6 +15,8 @@ import time
 import uuid
 from contextlib import contextmanager
 
+from meshgarden.wordle import player_key
+
 BBS_SCHEMA_VERSION = 1
 
 BBS_TABLES: tuple[str, ...] = (
@@ -163,16 +165,32 @@ def _copy_table(conn: sqlite3.Connection, table: str, transport: str) -> None:
     copied, source = _count(conn, "bbs", table), _count(conn, "main", table)
     if copied != source:
         raise RuntimeError(f"BBS split of {table}: copied {copied} of {source} rows")
-    # Ids are copied explicitly, but a deleted top id would otherwise be
-    # handed out again (a REPLY route keyed on an old mail id must not
-    # resolve to a new note).
-    conn.execute(
-        "UPDATE bbs.sqlite_sequence "
-        "SET seq = (SELECT m.seq FROM main.sqlite_sequence AS m WHERE m.name = ?1) "
-        "WHERE name = ?1 AND seq < "
-        "coalesce((SELECT m.seq FROM main.sqlite_sequence AS m WHERE m.name = ?1), 0)",
-        (table,),
-    )
+
+
+def _carry_sequence(conn: sqlite3.Connection, table: str) -> None:
+    """Raise bbs's AUTOINCREMENT high-water mark to at least main's.
+
+    Runs for every moved table, empty ones included: a fully collected
+    mailbox has no rows to copy, yet its reply routes still name old mail
+    ids, so a restarted sequence would let REPLY #1 resolve to a stale sender.
+    """
+    main_seq = conn.execute(
+        "SELECT seq FROM main.sqlite_sequence WHERE name = ?", (table,)
+    ).fetchone()
+    if main_seq is None:
+        return
+    bbs_seq = conn.execute(
+        "SELECT seq FROM bbs.sqlite_sequence WHERE name = ?", (table,)
+    ).fetchone()
+    if bbs_seq is None:
+        # sqlite_sequence has no unique key, so insert only when absent.
+        conn.execute(
+            "INSERT INTO bbs.sqlite_sequence(name, seq) VALUES (?, ?)", (table, main_seq[0])
+        )
+    elif bbs_seq[0] < main_seq[0]:
+        conn.execute(
+            "UPDATE bbs.sqlite_sequence SET seq = ? WHERE name = ?", (main_seq[0], table)
+        )
 
 
 def _conflicts(conn: sqlite3.Connection, table: str, instance_id: str) -> bool:
@@ -208,7 +226,39 @@ def assert_not_split(conn: sqlite3.Connection) -> None:
         )
 
 
-def ensure_split(conn: sqlite3.Connection, transport: str) -> None:
+# Game-state tables keyed by `wordle.player_key(sender, day, salt)` rather than
+# a raw node id, so NODE_ID_COLUMNS cannot qualify them.
+PLAYER_KEY_TABLES: tuple[str, ...] = ("wordle_state", "book_state")
+
+
+def _rekey_players(conn: sqlite3.Connection, table: str, salt: str) -> None:
+    """Re-key a MeshCore instance's copied game rows from the hash of the bare
+    id to the hash of the `mc:` id the daemon now plays under.
+
+    The hash is one-way, so candidates come from the ids this instance has
+    seen (its contacts and recent senders). A row nobody matches keeps its old
+    key and is orphaned, as before. Done here, before any other instance
+    shares the file, because a lookup-time fallback to the bare-id key would
+    let a forged MeshCore id claim a Meshtastic player's same-day state.
+    """
+    ids = [
+        row[0]
+        for row in conn.execute(
+            "SELECT node_id FROM main.nodes WHERE node_id LIKE '!%' "
+            "UNION SELECT sender_node_id FROM main.processed_requests "
+            "WHERE sender_node_id LIKE '!%'"
+        )
+    ]
+    days = [row[0] for row in conn.execute(f"SELECT DISTINCT day FROM bbs.{table}")]
+    for day in days:
+        for node_id in ids:
+            conn.execute(
+                f"UPDATE bbs.{table} SET player_key = ? WHERE player_key = ? AND day = ?",
+                (player_key("mc:" + node_id, day, salt), player_key(node_id, day, salt), day),
+            )
+
+
+def ensure_split(conn: sqlite3.Connection, transport: str, salt: str = "") -> None:
     """Create the shared BBS schema if needed and move this instance's legacy
     BBS tables into it. Idempotent and resumable after a crash at any point.
 
@@ -239,13 +289,16 @@ def ensure_split(conn: sqlite3.Connection, transport: str) -> None:
             if moved is not None and moved[0] == instance_id:
                 pass  # our copy committed before a crash; only the drop remains
             elif _count(conn, "main", table) == 0:
-                pass  # nothing to bring
+                _carry_sequence(conn, table)  # no rows, but ids already issued
             elif _count(conn, "bbs", table) > 0:
                 # Re-checked under this lock: another daemon may have copied
                 # in since the pre-pass.
                 raise _conflict_error(conn, [table])
             else:
                 _copy_table(conn, table, transport)
+                _carry_sequence(conn, table)
+                if transport == "meshcore" and table in PLAYER_KEY_TABLES:
+                    _rekey_players(conn, table, salt)
                 conn.execute(
                     "INSERT OR REPLACE INTO bbs.bbs_meta(key, value) VALUES (?, ?)",
                     (f"moved:{table}", instance_id),

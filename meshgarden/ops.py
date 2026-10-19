@@ -549,8 +549,11 @@ def restore_backup(
         os.chmod(tmp_dest, 0o600)
         os.replace(tmp_dest, target_db_path)  # atomic: only a complete copy gets the final name
     except Exception as exc:
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(tmp_dest)
+        # The temp copy was opened in WAL mode, so it can leave -wal/-shm
+        # sidecars of its own; remove them with it.
+        for p in (tmp_dest, *_sidecar_paths(tmp_dest)):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(p)
         # Move each aside file back independently -- one failing must not
         # stop the others from being restored -- but a failure here is no
         # longer swallowed: the aside path is surfaced in both `error`

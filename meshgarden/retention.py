@@ -187,9 +187,15 @@ class Retention:
         observations_days AND that have no guestbook entry. Returns count."""
         cutoff = now - self._retention.observations_days * 86400
         deleted = self._delete_in_batches(
+            # guestbook ids may be transport-qualified (`mc:!…`) while nodes
+            # keeps bare ids, so match through bbs_local_id. NOT EXISTS, not
+            # NOT IN: the other mesh's entries map to NULL, and a NULL in a
+            # NOT IN list would make it match nothing and protect no one.
             "DELETE FROM nodes WHERE node_id IN "
-            "(SELECT node_id FROM nodes WHERE MAX(observed_last_seen, identity_updated_at) < ? "
-            "AND node_id NOT IN (SELECT DISTINCT sender_node_id FROM guestbook) LIMIT ?)",
+            "(SELECT n.node_id FROM nodes AS n "
+            "WHERE MAX(n.observed_last_seen, n.identity_updated_at) < ? "
+            "AND NOT EXISTS (SELECT 1 FROM guestbook AS g "
+            "WHERE bbs_local_id(g.sender_node_id) = n.node_id) LIMIT ?)",
             (cutoff, BATCH_SIZE),
         )
         if deleted:

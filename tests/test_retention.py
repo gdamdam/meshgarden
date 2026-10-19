@@ -54,6 +54,27 @@ def test_node_with_guestbook_entry_is_not_pruned(tmp_path):
     assert r.prune_nodes(now) == 1
     assert conn.execute("SELECT count(*) FROM nodes").fetchone()[0] == 1
 
+
+def test_meshcore_node_with_qualified_guestbook_entry_is_not_pruned(tmp_path):
+    """Shared bbs on a MeshCore instance: guestbook holds `mc:!…`, nodes the
+    bare id. The entry must still protect its author; the other mesh's
+    entries (NULL through bbs_local_id) must not stop pruning the rest."""
+    conn = connect(str(tmp_path / "o.db"), bbs_path=str(tmp_path / "bbs.db"), transport="meshcore")
+    migrate(conn, transport="meshcore")
+    rcfg = RetentionConfig(observations_days=7, aggregates_days=90, guestbook_expiry_days=0,
+                           max_managed_storage_mib=1024, node_daily_days=365, links_days=30)
+    bcfg = BackupConfig(directory=str(tmp_path / "backups"), interval_hours=24, keep=7)
+    r = Retention(conn, rcfg, bcfg, log_dir=str(tmp_path / "logs"))
+    for node in ("!aabbccdd", "!00000002"):
+        conn.execute("INSERT INTO nodes(node_id,observed_first_seen,observed_last_seen)"
+                     " VALUES (?,1,1)", (node,))
+    for sender in ("mc:!aabbccdd", "!0000beef"):  # own author, Meshtastic author
+        conn.execute("INSERT INTO guestbook(created_at,sender_node_id,message,message_hash)"
+                     " VALUES (1,?,'hi','h')", (sender,))
+    conn.commit()
+    assert r.prune_nodes(10_000_000) == 1
+    assert [row[0] for row in conn.execute("SELECT node_id FROM nodes")] == ["!aabbccdd"]
+
 def ins_req(conn, sender, pid, state, updated_at, expires_at=10_000_000_000):
     conn.execute(
         "INSERT INTO processed_requests"
