@@ -233,3 +233,11 @@ def test_migration_18_adds_daemon_state_and_helpers_round_trip(tmp_path):
     database.set_daemon_state(conn, "k", "v1", 10)
     database.set_daemon_state(conn, "k", "v2", 20)
     assert database.get_daemon_state(conn, "k") == "v2"
+
+
+def test_connect_bbs_path_attaches_private_file(tmp_path):
+    bbs = tmp_path / "shared" / "bbs.db"
+    conn = connect(str(tmp_path / "o.db"), bbs_path=str(bbs))
+    assert [r[1] for r in conn.execute("PRAGMA database_list")] == ["main", "bbs"]
+    assert os.stat(bbs).st_mode & 0o777 == 0o600
+    assert os.stat(bbs.parent).st_mode & 0o777 == 0o700

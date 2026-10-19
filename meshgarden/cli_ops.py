@@ -109,7 +109,7 @@ def _connect_readonly_or_report(cfg: Config):
     from meshgarden.database import connect
 
     try:
-        return connect(cfg.database.path, read_only=True)
+        return connect(cfg.database.path, read_only=True, bbs_path=cfg.database.resolved_bbs_path)
     except sqlite3.OperationalError:
         print(f"error: database not found: {cfg.database.path}", file=sys.stderr)
         return None
@@ -340,9 +340,9 @@ def cmd_guestbook_approve(cfg: Config, entry_id: int, *, topic: str | None = Non
     from meshgarden.database import connect, migrate
     from meshgarden.guestbook import Guestbook
 
-    conn = connect(cfg.database.path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
     try:
-        migrate(conn)
+        migrate(conn, transport=cfg.radio.transport)
         row = conn.execute(
             "SELECT visible, moderation_reason, topic FROM guestbook WHERE entry_id=?", (entry_id,)
         ).fetchone()
@@ -452,9 +452,9 @@ def cmd_mail_purge(cfg: Config, node_id: str) -> int:
         return 2
     node_id = parsed
 
-    conn = connect(cfg.database.path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
     try:
-        migrate(conn)
+        migrate(conn, transport=cfg.radio.transport)
         label = _quota_node_label(conn, node_id)
         with conn:
             cur = conn.execute("DELETE FROM mail WHERE recipient_node_id=?", (node_id,))
@@ -495,9 +495,9 @@ def cmd_mail_alias_set(
     if parsed is None:
         print(f"invalid node id: {node_id!r}", file=sys.stderr)
         return 2
-    conn = connect(cfg.database.path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
     try:
-        migrate(conn)
+        migrate(conn, transport=cfg.radio.transport)
         status = MailAliases(conn).operator_set(
             parsed, alias, int(time.time()), replace=replace_existing
         )
@@ -528,9 +528,9 @@ def cmd_mail_alias_release(cfg: Config, alias: str) -> int:
     if normalized is None:
         print("invalid alias", file=sys.stderr)
         return 2
-    conn = connect(cfg.database.path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
     try:
-        migrate(conn)
+        migrate(conn, transport=cfg.radio.transport)
         if not MailAliases(conn).operator_release(normalized, int(time.time())):
             print(f"alias not found: @{normalized}", file=sys.stderr)
             return 3
@@ -672,9 +672,9 @@ def cmd_positions_delete(
         print("--from must not be after --to", file=sys.stderr)
         return 2
 
-    conn = connect(cfg.database.path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
     try:
-        migrate(conn)
+        migrate(conn, transport=cfg.radio.transport)
         deleted = positions.delete_dm_positions(
             conn, ids=ids or None, id_range=parsed_range, node_id=node_id,
             since=since, until=until,
@@ -700,9 +700,9 @@ def cmd_lab_revoke(cfg: Config, node_id: str) -> int:
         return 2
     node_id = parsed
 
-    conn = connect(cfg.database.path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
     try:
-        migrate(conn)
+        migrate(conn, transport=cfg.radio.transport)
         label = _node_label(conn, node_id)
         with conn:
             cur = conn.execute("DELETE FROM lab_nodes WHERE node_id=?", (node_id,))
@@ -747,9 +747,9 @@ def cmd_quota_reset(
 
     day = day or local_day(int(time.time()), cfg.service.timezone)
 
-    conn = connect(cfg.database.path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
     try:
-        migrate(conn)
+        migrate(conn, transport=cfg.radio.transport)
         resolved, matches = _resolve_quota_node(conn, node_id)
         if resolved is None:
             return _report_quota_node_error(node_id, matches)
@@ -793,9 +793,9 @@ def cmd_quota_reset_all(cfg: Config) -> int:
     """
     from meshgarden.database import connect, migrate
 
-    conn = connect(cfg.database.path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
     try:
-        migrate(conn)
+        migrate(conn, transport=cfg.radio.transport)
         with conn:
             cur = conn.execute("DELETE FROM node_daily_quota")
         print(

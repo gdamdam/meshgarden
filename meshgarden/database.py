@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sqlite3
 
+from meshgarden import bbs_store
 from meshgarden.community import NEWS_SQL
 from meshgarden.mail import MAIL_ALIASES_SQL, REPLY_ROUTES_SQL
 from meshgarden.updates import SCHEMA_SQL as UPDATES_SQL
@@ -418,7 +419,23 @@ MIGRATIONS: list[tuple[int, str]] = [
 ]
 
 
-def connect(path: str, *, read_only: bool = False) -> sqlite3.Connection:
+def _ensure_private_parent(path: str) -> None:
+    dirname = os.path.dirname(path)
+    if dirname:
+        is_new_dir = not os.path.isdir(dirname)
+        os.makedirs(dirname, exist_ok=True)
+        if is_new_dir:
+            # Belt and braces alongside the systemd unit's UMask=0077:
+            # a state directory this process creates itself (rather
+            # than one systemd's StateDirectory already prepared) must
+            # not rely on the ambient umask alone to keep the
+            # guestbook/observation data and status file owner-only.
+            os.chmod(dirname, 0o700)
+
+
+def connect(
+    path: str, *, read_only: bool = False, bbs_path: str | None = None
+) -> sqlite3.Connection:
     """Open a connection with WAL mode and the pragmas the daemon and CLI both need.
 
     The daemon's single DB worker thread and a separately-started CLI process
@@ -430,29 +447,42 @@ def connect(path: str, *, read_only: bool = False) -> sqlite3.Connection:
     separate connection per worker thread rather than sharing one across
     threads, so WAL + busy_timeout is what provides safe concurrency here,
     not a relaxed same-thread guard.
+
+    `bbs_path` attaches the shared BBS file as schema `bbs` (see bbs_store);
+    None keeps the legacy single-file layout. A read-only attach of a
+    missing file raises sqlite3.OperationalError, same as a missing main.
     """
     if read_only:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     else:
-        dirname = os.path.dirname(path)
-        if dirname:
-            is_new_dir = not os.path.isdir(dirname)
-            os.makedirs(dirname, exist_ok=True)
-            if is_new_dir:
-                # Belt and braces alongside the systemd unit's UMask=0077:
-                # a state directory this process creates itself (rather
-                # than one systemd's StateDirectory already prepared) must
-                # not rely on the ambient umask alone to keep the
-                # guestbook/observation data and status file owner-only.
-                os.chmod(dirname, 0o700)
+        _ensure_private_parent(path)
         is_new = not os.path.exists(path)
         conn = sqlite3.connect(path)
         if is_new:
             os.chmod(path, 0o600)
 
+    if bbs_path:
+        try:
+            if read_only:
+                # The main connection was opened with uri=True, which is
+                # what lets ATTACH honour the mode=ro URI too.
+                conn.execute("ATTACH DATABASE ? AS bbs", (f"file:{bbs_path}?mode=ro",))
+            else:
+                _ensure_private_parent(bbs_path)
+                bbs_is_new = not os.path.exists(bbs_path)
+                conn.execute("ATTACH DATABASE ? AS bbs", (bbs_path,))
+                if bbs_is_new:
+                    os.chmod(bbs_path, 0o600)
+        except BaseException:
+            conn.close()
+            raise
+
     conn.row_factory = sqlite3.Row
+    # Unqualified journal_mode applies to every attached database.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    if bbs_path:
+        conn.execute("PRAGMA bbs.synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA temp_store=MEMORY")
@@ -478,7 +508,7 @@ def get_schema_version(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA user_version").fetchone()[0]
 
 
-def migrate(conn: sqlite3.Connection) -> int:
+def migrate(conn: sqlite3.Connection, *, transport: str = "meshtastic") -> int:
     """Apply pending migrations. Idempotent.
 
     Each migration's DDL and its `user_version` bump run as a single
@@ -487,6 +517,10 @@ def migrate(conn: sqlite3.Connection) -> int:
     user_version at the last successfully completed migration, never a
     partially-applied schema paired with a version bump that would make a
     later `migrate()` call retry (and fail on) already-created tables.
+
+    With a `bbs` schema attached, the BBS tables are then moved into the
+    shared file (bbs_store.ensure_split); `transport` decides whether their
+    node ids get the `mc:` qualifier. The returned version is main's.
     """
     current = get_schema_version(conn)
     for version, sql in MIGRATIONS:
@@ -498,4 +532,6 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute("ROLLBACK")
                 raise
             current = version
+    if bbs_store.is_attached(conn):
+        bbs_store.ensure_split(conn, transport)
     return current

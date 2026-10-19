@@ -173,7 +173,7 @@ def _ro_connect(cfg: Config) -> sqlite3.Connection:
     started) an empty in-memory database with the same schema, so every
     page renders as "empty" instead of erroring."""
     try:
-        return connect(cfg.database.path, read_only=True)
+        return connect(cfg.database.path, read_only=True, bbs_path=cfg.database.resolved_bbs_path)
     except sqlite3.OperationalError:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
