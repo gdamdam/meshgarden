@@ -87,6 +87,12 @@ class Command(StrEnum):
     POSITION = "POSITION"
     CMD_HELP = "CMD_HELP"
     VERSION = "VERSION"
+    # Optional command modules (meshgarden.modules). CUSTOM labels every
+    # operator-defined information command, so metric cardinality stays fixed.
+    FIND = "FIND"
+    FORECAST = "FORECAST"
+    CUSTOM = "CUSTOM"
+    LINK = "LINK"
     UNKNOWN = "UNKNOWN"
     # A bookkeeping label ONLY (task 3B-3) -- `parse_command` never produces
     # it, and it is never passed to `Daemon._dispatch_command`. It exists
@@ -343,6 +349,8 @@ class ParsedCommand:
     # parser cannot know which mesh the daemon itself serves, so the daemon
     # treats its own mesh's suffix as no suffix. None = no suffix given.
     mesh: str | None = None
+    # Name of the meshgarden.modules command that handles this request.
+    module: str | None = None
 
 
 # LAB tier (Task 13): POST/READ/BOARDS are always experimental.
@@ -396,8 +404,7 @@ _BARE_COMMANDS = {
     "PING": Command.PING,
     "PATH": Command.PATH,
     "ROUTE": Command.PATH,
-    "MOON": Command.MOON,
-    "SUN": Command.SUN,
+    # MOON and SUN are command modules (meshgarden.modules.builtin_modules).
     "BOARDS": Command.BOARDS,
     # Hidden operator command: deliberately absent from _KNOWN_COMMAND_WORDS
     # (so HELP VERSION/? VERSION is UNKNOWN, not CMD_HELP) and from every
@@ -487,8 +494,23 @@ def position_ack_text(kind: str, lat: float, lon: float) -> str:
     return f"📍 {kind} position saved · {lat:.4f}, {lon:.4f}"
 
 
+# Words an operator-defined command (or a module alias) may never take: every
+# built-in word and alias, the distress words, the knock triggers, menu page
+# names and words reserved for planned commands.
+RESERVED_COMMAND_WORDS = frozenset(
+    set(_BARE_COMMANDS) | _KNOWN_COMMAND_WORDS
+    | {
+        "?", "HELP", "SOS", "EMERGENCY", "MAYDAY", "911", "!GARDEN", "!DM", "KNOCK",
+        "SIGN", "POST", "READ", "BOOK", "WORDLE", "GUESTBOOK", "SEEN", "MAIL", "INBOX",
+        "NEWS", "GUIDE", "LOCAL", "REPLY", "!PATH", "!ROUTE", "!MOON", "!SUN",
+        "MOON", "SUN", "VERSION", "MORE", "LAB", "SOCIAL", "GAMES", "DAILY",
+        "FIND", "FORECAST", "LINK", "UNLINK", "PRIVACY", "MYDATA", "FORGET",
+    }
+)
+
+
 def parse_command(
-    text: str, *, lab_unlock_word: str = "", mesh_suffix: bool = True
+    text: str, *, lab_unlock_word: str = "", mesh_suffix: bool = True, modules=None
 ) -> ParsedCommand:
     """Commands are case-insensitive, exact matches -- no prefix matching, so
     e.g. `MENUS` is `UNKNOWN`. `MENU` and `?` are aliases for the same menu
@@ -553,9 +575,17 @@ def parse_command(
     tells the three apart, since none of them has a fixed shape `parse_command`
     could validate eagerly.
 
+    `modules` (a `meshgarden.modules.ModuleRegistry`, default: the built-in
+    modules only) resolves words no built-in claims. A module that takes no
+    argument is UNKNOWN with one, like a bare command.
+
     Guestbook text case is preserved. Never logs the argument or the raw
     text; callers must do the same.
     """
+    if modules is None:
+        from meshgarden.modules import default_registry
+
+        modules = default_registry()
     stripped = text.strip()
     if lab_unlock_word and stripped.upper() == lab_unlock_word.upper():
         return ParsedCommand(Command.LAB_UNLOCK, "")
@@ -573,7 +603,7 @@ def parse_command(
         return ParsedCommand(Command.GUIDE if upper == "LOCAL" else Command(upper), rest.strip())
     if upper == "INBOX":
         return ParsedCommand(Command.MAIL, "") if not rest else ParsedCommand(Command.UNKNOWN, "")
-    if upper in {"!MOON", "!SUN", "!PATH", "!ROUTE"}:
+    if upper in {"!PATH", "!ROUTE"}:
         upper = upper[1:]
     if upper == "SIGN":
         return ParsedCommand(Command.SIGN, rest.strip())
@@ -604,7 +634,7 @@ def parse_command(
         if not rest.strip():
             return ParsedCommand(Command.NOT_EMERGENCY, "")
         word = rest.strip().upper()
-        if word in _KNOWN_COMMAND_WORDS:
+        if word in _KNOWN_COMMAND_WORDS or modules.lookup(word) is not None:
             return ParsedCommand(Command.CMD_HELP, word)
         return ParsedCommand(Command.UNKNOWN, "")
     if upper in _MENU_ALIASES:
@@ -612,7 +642,7 @@ def parse_command(
         arg_upper = arg.upper()
         if (
             arg_upper not in ("STATS", "GAMES", "BOARDS", "LAB")
-            and arg_upper in _KNOWN_COMMAND_WORDS
+            and (arg_upper in _KNOWN_COMMAND_WORDS or modules.lookup(arg_upper) is not None)
         ):
             return ParsedCommand(Command.CMD_HELP, arg_upper)
         return ParsedCommand(Command.MENU, arg)
@@ -623,6 +653,11 @@ def parse_command(
         if rest:
             return ParsedCommand(Command.UNKNOWN, "")
         return ParsedCommand(_BARE_COMMANDS[upper], "")
+    module = modules.lookup(upper)
+    if module is not None:
+        if rest.strip() and not module.takes_argument:
+            return ParsedCommand(Command.UNKNOWN, "")
+        return ParsedCommand(module.command, rest.strip(), module=module.name)
     return ParsedCommand(Command.UNKNOWN, "")
 
 

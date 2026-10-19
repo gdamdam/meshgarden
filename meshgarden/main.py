@@ -68,6 +68,7 @@ from meshgarden import (
     digest,
     exchange_log,
     moderation,
+    modules,
     ops,
     positions,
     updates,
@@ -184,7 +185,7 @@ from meshgarden.metrics import (
     start_metrics_server,
 )
 from meshgarden.models import IncomingPacket, MeshCoreObservation, MeshCoreRoute, ReplyJob
-from meshgarden.moon import moon_text
+from meshgarden.modules import ModuleRequest
 from meshgarden.quota import DailyQuota
 from meshgarden.radio import RadioAdapter, as_inbound
 from meshgarden.retention import Retention, week_summary
@@ -638,6 +639,7 @@ class Daemon:
         # call time. ICHING is deliberately NOT randomized -- it is a pure
         # function of (sender, local day, salt); see fortune.py.
         self._haiku_rng = haiku_rng
+        self._modules = modules.configured_registry(cfg)
         self.started_at = int(time.time())
         self._stopped = False
         self._stop_event = threading.Event()
@@ -1906,6 +1908,7 @@ class Daemon:
             lab_unlock_word=self.cfg.service.lab_unlock_word,
             # Without a peer observatory the MC/MT suffix stays ordinary text.
             mesh_suffix=bool(self.cfg.database.peer_path),
+            modules=self._modules,
         )
         if parsed.command is Command.POSITION and not self.cfg.observatory.dm_position_capture:
             # Off by default: a location share is ordinary silent text
@@ -1936,7 +1939,11 @@ class Daemon:
             self.cfg.service.lab_unlock_word == ""
             or not self._lab.is_unlocked(self._bbs_id(sender_node_id))
         )
-        lab_gated_help = parsed.command is Command.CMD_HELP and parsed.argument in LAB_HELP_WORDS
+        lab_words = self._modules.lab_words()
+        lab_gated_help = parsed.command is Command.CMD_HELP and (
+            parsed.argument in LAB_HELP_WORDS or parsed.argument in lab_words
+        )
+        module = self._modules.get(parsed.module)
         lab_gated_menu = (
             parsed.command is Command.MENU
             and parsed.argument.strip().upper() in LAB_MENU_PAGES
@@ -1948,6 +1955,7 @@ class Daemon:
         )
         if lab_locked and not public_mail and (
             parsed.command in LAB_COMMANDS or lab_gated_help or lab_gated_menu
+            or (module is not None and module.lab)
         ):
             parsed = ParsedCommand(
                 Command.UNKNOWN,
@@ -1957,7 +1965,7 @@ class Daemon:
                 ),
             )
         if parsed.command is Command.UNKNOWN and parsed.rejection_reason is None:
-            hidden = set(LAB_HELP_WORDS) if lab_locked else set()
+            hidden = set(LAB_HELP_WORDS) | set(lab_words) if lab_locked else set()
             if self.cfg.service.mail_public:
                 hidden -= {"MAIL", "INBOX", "REPLY"}
             if not self.cfg.service.seen_enabled:
@@ -2188,6 +2196,9 @@ class Daemon:
         (see that method for exactly which fields are honest and which are
         inert placeholders)."""
         usefulness.record(self._db_conn, sender_node_id, parsed.command.value, now)
+        if parsed.module is not None:
+            self._handle_module(parsed, sender_node_id, obs, now)
+            return
         if parsed.command == Command.NEW:
             self._resolve_pending_mail_deliveries(now)
             bbs_sender = self._bbs_id(sender_node_id)
@@ -2366,9 +2377,11 @@ class Daemon:
                 and parsed.argument in ("MAIL", "INBOX", "REPLY")
             )
         )
-        public_channel_command = parsed.command in _CHANNEL_PUBLIC_COMMANDS and not (
-            parsed.command is Command.MENU and bool(parsed.argument)
-        )
+        channel_module = self._modules.get(parsed.module)
+        public_channel_command = (
+            parsed.command in _CHANNEL_PUBLIC_COMMANDS
+            or (channel_module is not None and channel_module.channel_ok)
+        ) and not (parsed.command is Command.MENU and bool(parsed.argument))
         # A channel display name is not authenticated. Mail content and mail
         # controls therefore remain strictly DM-only, and typo suggestions do
         # not turn ordinary channel chatter into bot traffic.
@@ -2777,6 +2790,30 @@ class Daemon:
         outcome = "accepted" if sent else "queue_full"
         self._metrics.commands_total.labels(command.value, outcome).inc()
 
+    def _handle_module(
+        self, parsed: ParsedCommand, sender_node_id: str, obs: IncomingPacket, now: int
+    ) -> None:
+        """A meshgarden.modules command: the module computes the body, and
+        this method alone reserves and sends it."""
+        module = self._modules.get(parsed.module)
+        assert module is not None, parsed.module
+        bbs_sender = self._bbs_id(sender_node_id)
+        request = ModuleRequest(
+            argument=parsed.argument,
+            sender=bbs_sender,
+            now=now,
+            max_bytes=self._transport.max_text_bytes,
+            channel=obs.reply_channel_idx is not None,
+            lab_unlocked=bool(
+                self.cfg.service.lab_unlock_word and self._lab.is_unlocked(bbs_sender)
+            ),
+            conn=self._db_conn,
+        )
+        body = truncate_utf8(self._modules.run(module, request), self._transport.max_text_bytes)
+        sent = self._reserve_and_send(sender_node_id, obs, now, body)
+        self._metrics.commands_total.labels(
+            module.command.value, "accepted" if sent else "queue_full").inc()
+
     def _handle_repeater(
         self, sender_node_id: str, obs: IncomingPacket, now: int
     ) -> None:
@@ -2829,14 +2866,19 @@ class Daemon:
                 self.cfg.service.lab_unlock_word != ""
                 and self._lab.is_unlocked(self._bbs_id(sender_node_id))
             )
+            more = self._modules.menu_more(lab_unlocked=lab_unlocked)
+            if argument.strip().upper() == "MORE" and more:
+                return more
             body = menu_reply_for(argument, lab_unlocked=lab_unlocked,
                                   mail_public=self.cfg.service.mail_public)
+            if more and not argument.strip():
+                body += "\nMENU MORE"
             # Only the top-level MENU/? reply carries the quota hint --
             # never MENU STATS/MENU BOARDS/MENU GAMES/MENU DAILY/MENU LAB,
             # and never an echo of `argument` itself (menu_reply_for
             # already guarantees that part).
             if argument.strip().upper() not in (
-                "STATS", "GAMES", "BOARDS", "LAB", "DAILY", "SOCIAL"
+                "STATS", "GAMES", "BOARDS", "LAB", "DAILY", "SOCIAL", "MORE"
             ):
                 day = local_day(now, self.cfg.service.timezone)
                 used, _ = self._quota.usage(sender_node_id, day)
@@ -2874,20 +2916,6 @@ class Daemon:
                 max_bytes=self._transport.max_text_bytes,
                 companion_events=isinstance(self._transport, MeshCoreTransport),
             )
-        if command == Command.SUN:
-            lat, lon = self.cfg.observatory.latitude, self.cfg.observatory.longitude
-            if (lat, lon) == (0.0, 0.0):
-                lat = lon = None
-            try:
-                from meshgarden.sun import sun_text
-            except ImportError:
-                log.warning(
-                    "SUN unavailable: synchronize dependencies using scripts/install-rpi.sh"
-                )
-                return "☀️ SUN unavailable\nAstronomy data support needs updating."
-            return sun_text(now, latitude=lat, longitude=lon, timezone="America/Los_Angeles")
-        if command == Command.MOON:
-            return moon_text(now)
         if command == Command.ICHING:
             day = local_day(now, self.cfg.service.timezone)
             return iching_text(
@@ -2927,7 +2955,15 @@ class Daemon:
                 companion_events=isinstance(self._transport, MeshCoreTransport),
             )
         if command == Command.CMD_HELP:
-            return help_text(argument) or menu_text()
+            lab_unlocked = (
+                self.cfg.service.lab_unlock_word != ""
+                and self._lab.is_unlocked(self._bbs_id(sender_node_id))
+            )
+            return (
+                help_text(argument)
+                or self._modules.help(argument, lab_unlocked=lab_unlocked)
+                or menu_text()
+            )
         if command == Command.BOARDS:
             return boards_text(self._guestbook.topic_counts())
         if command == Command.VERSION:

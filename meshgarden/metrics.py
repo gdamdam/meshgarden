@@ -78,6 +78,10 @@ COMMANDS: tuple[str, ...] = (
     "LAB_UNLOCK",
     "CMD_HELP",
     "VERSION",
+    "FIND",
+    "FORECAST",
+    "CUSTOM",
+    "LINK",
     "UNKNOWN",
     "KNOCK",
 )
