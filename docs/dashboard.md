@@ -5,6 +5,11 @@ observed, without radio access or a terminal. It is off by default (`[web] enabl
 When enabled it serves eleven small server-rendered HTML pages and a set of JSON endpoints from a
 daemon thread, with no external CSS, JS or fonts, no live updates, and no map tiles.
 
+Every table sorts by column: click a header (or focus it and press Enter or Space) to sort, and
+click again to reverse; empty and `n/a` cells stay last. It is the dashboard's only script, served
+inline and allowed by the `Content-Security-Policy` through its exact SHA-256 hash, so no other
+script can run. Paginated tables sort the rows on the current page.
+
 ## Enable it
 
 Add this to your config, restart the daemon, and browse to `http://127.0.0.1:9109/`:

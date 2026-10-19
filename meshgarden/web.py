@@ -90,7 +90,11 @@ logger = logging.getLogger(__name__)
 STATUS_STALE_SECONDS = 60
 
 _SECURITY_HEADERS: dict[str, str] = {
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+    # script-src allows exactly one script, the table sorter, by its hash.
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+        f"script-src {tpl.SORT_SCRIPT_CSP}"
+    ),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",

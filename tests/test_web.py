@@ -195,8 +195,13 @@ def _get(url: str, method: str = "GET") -> tuple[int, dict, bytes]:
         return exc.code, dict(exc.headers), exc.read()
 
 
+from meshgarden import web_templates as _tpl  # noqa: E402
+
 _SECURITY_HEADER_EXPECTATIONS = {
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+        f"script-src {_tpl.SORT_SCRIPT_CSP}"
+    ),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",
@@ -1869,3 +1874,21 @@ def test_unknown_hop_count_is_not_flagged_implausible_on_display(tmp_path):
     assert not _display_distance_plausible(cfg.observatory.max_observed_km + 1, None, cfg)
     assert not _display_distance_plausible(cfg.observatory.max_direct_km + 1, 0, cfg)
     assert _display_distance_plausible(1.0, 0, cfg)
+
+
+def test_every_page_serves_only_the_hash_pinned_sort_script():
+    """Sortable tables: one inline script, allowed by the CSP through the
+    hash of exactly the bytes served, so no other script can run."""
+    import base64
+    import hashlib
+    import re
+
+    from meshgarden.web_templates import SORT_SCRIPT_CSP, layout
+
+    page = layout(title="t", active="/", body="<table><thead><tr><th>A</th></tr></thead>"
+                  "<tbody><tr><td>1</td></tr></tbody></table>").decode()
+    scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+    assert len(scripts) == 1 and "src=" not in page.split("<script>")[1][:20]
+    digest = base64.b64encode(hashlib.sha256(scripts[0].encode()).digest()).decode()
+    assert f"'sha256-{digest}'" == SORT_SCRIPT_CSP
+    assert "innerHTML" not in scripts[0] and "fetch(" not in scripts[0]

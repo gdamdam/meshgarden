@@ -9,6 +9,8 @@ tiny inline SVG bar charts. No external assets: all CSS is inlined in
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import html
 import re
 from collections.abc import Iterable
@@ -75,6 +77,10 @@ table { border-collapse: collapse; width: 100%; margin: 6px 0 16px; }
 th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border);
   font-variant-numeric: tabular-nums; }
 th { color: var(--muted); font-weight: 600; font-size: 0.82rem; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover, th.sortable:focus-visible { color: var(--fg); }
+th[aria-sort="ascending"]::after { content: " ▲"; }
+th[aria-sort="descending"]::after { content: " ▼"; }
 .muted { color: var(--muted); }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px;
   font-size: 0.78rem; border: 1px solid var(--border); }
@@ -283,6 +289,55 @@ def svg_heat_strip(
     return "".join(parts)
 
 
+# Column sorting for every table, client-side. The only script the
+# dashboard serves: inline (no external files), and allowed by the
+# Content-Security-Policy through its exact hash, so no other script can run.
+SORT_SCRIPT = """(function () {
+  // Click (or Enter/Space on) a column header to sort that table's rows;
+  // click again to reverse. Empty and n/a cells always sort last.
+  function key(cell) {
+    var v = cell.getAttribute("data-sort");
+    if (v === null) v = cell.textContent.trim();
+    if (v === "" || v === "n/a" || v === "—" || v === "-") return null;
+    var m = v.replace(/,/g, "").match(/^[<>~+]?(-?\d+(?:\.\d+)?)/);
+    return m ? { n: parseFloat(m[1]) } : { s: v.toLowerCase() };
+  }
+  function cmp(a, b) {
+    if ("n" in a && "n" in b) return a.n - b.n;
+    var x = "n" in a ? String(a.n) : a.s, y = "n" in b ? String(b.n) : b.s;
+    return x.localeCompare(y, undefined, { numeric: true });
+  }
+  document.querySelectorAll("table").forEach(function (table) {
+    var head = table.tHead, body = table.tBodies[0];
+    if (!head || !body || !head.rows.length) return;
+    var ths = head.rows[0].cells;
+    Array.prototype.forEach.call(ths, function (th, i) {
+      th.tabIndex = 0;
+      th.classList.add("sortable");
+      function go() {
+        var asc = th.getAttribute("aria-sort") !== "ascending";
+        Array.prototype.forEach.call(ths, function (o) { o.removeAttribute("aria-sort"); });
+        th.setAttribute("aria-sort", asc ? "ascending" : "descending");
+        var rows = Array.prototype.slice.call(body.rows);
+        rows.sort(function (r1, r2) {
+          var a = key(r1.cells[i] || r1), b = key(r2.cells[i] || r2);
+          if (a === null || b === null) return a === b ? 0 : (a === null ? 1 : -1);
+          return asc ? cmp(a, b) : -cmp(a, b);
+        });
+        rows.forEach(function (r) { body.appendChild(r); });
+      }
+      th.addEventListener("click", go);
+      th.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); }
+      });
+    });
+  });
+})();"""
+SORT_SCRIPT_CSP = "'sha256-" + base64.b64encode(
+    hashlib.sha256(SORT_SCRIPT.encode("utf-8")).digest()
+).decode("ascii") + "'"
+
+
 def layout(*, title: str, active: str, body: str) -> bytes:
     nav_links = []
     for href, label in _NAV_ITEMS:
@@ -306,6 +361,7 @@ def layout(*, title: str, active: str, body: str) -> bytes:
 {body}
 </main>
 <footer>Local, read-only dashboard. No write actions are served here.</footer>
+<script>{SORT_SCRIPT}</script>
 </body>
 </html>
 """

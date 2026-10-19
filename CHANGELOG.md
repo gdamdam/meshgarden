@@ -9,6 +9,14 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.13.3] - 2026-10-19
+
+### Added
+
+- Dashboard: every table sorts by column. Click a header (or Enter/Space on it) to sort, again to
+  reverse; numbers sort numerically, empty and `n/a` cells last. One small inline script, allowed by
+  the `Content-Security-Policy` only through its SHA-256 hash; no external files.
+
 ## [1.13.2] - 2026-10-19
 
 ### Fixed
