@@ -30,12 +30,12 @@ def _at(h, m, day=10):
     return int(datetime(2026, 10, day, h, m, tzinfo=ZoneInfo(TZ)).timestamp())
 
 
-def _daemon(tmp_path, **radio):
+def _daemon(tmp_path, bbs_path="", **radio):
     cfg = Config(
         radio=RadioConfig(device="/dev/fake", expected_node_id="!11223344", transport="meshcore",
                           meshcore_contact_target=2, **radio),
         service=ServiceConfig(lab_unlock_word="SUPERGARDENME", timezone=TZ),
-        database=DatabaseConfig(path=str(tmp_path / "o.db")),
+        database=DatabaseConfig(path=str(tmp_path / "o.db"), bbs_path=bbs_path),
         retention=RetentionConfig(),
         backup=BackupConfig(directory=str(tmp_path / "backups")),
         metrics=MetricsConfig(),
@@ -86,6 +86,26 @@ def test_prune_removes_least_heard_unprotected_contact_once_per_day(tmp_path):
         assert seen == []
         ft.fake.add_contact(B, "bravo", 1, 1)
         _maintain(d, _at(5, 0))  # same day: nothing more
+        assert B in ft.fake._contacts
+    finally:
+        d.stop()
+
+
+def test_prune_protects_only_this_meshs_ids_from_the_shared_bbs(tmp_path):
+    d, ft = _daemon(tmp_path, bbs_path=str(tmp_path / "bbs.db"),
+                    meshcore_contact_prune_enabled=True)
+    try:
+        # The Meshtastic node with B's bare id is a different node.
+        d.conn.execute("INSERT INTO lab_nodes(node_id, unlocked_at) VALUES ('!bbbbbbbb', 0)")
+        d.conn.commit()
+        _maintain(d, _at(4, 30))
+        assert set(ft.fake._contacts) == {A, C}
+
+        ft.fake.add_contact(B, "bravo", 1, 1)
+        d.conn.execute("INSERT INTO mail_prefs(node_id, enabled, updated_at) "
+                       "VALUES ('mc:!bbbbbbbb', 1, 0)")
+        d.conn.commit()
+        _maintain(d, _at(4, 30, day=11))
         assert B in ft.fake._contacts
     finally:
         d.stop()

@@ -61,7 +61,10 @@ def parse_node_id_argument(text: str) -> str | None:
     them construct a live `RadioAdapter`/`Transport`, so there is no
     `transport.parse_node_argument` to ask, and this keeps their
     validation as the exact same rule rather than a second copy that could
-    drift (task 3D)."""
+    drift (task 3D). The ones naming a shared BBS row (`mail purge`,
+    `mail alias set`, `lab revoke`, `block`, `unblock`) reach it through
+    `bbs_ids.parse_qualified_argument`, which first strips an optional
+    `mc:`/`mt:` mesh prefix."""
     t = text.strip()
     return t.lower() if NODE_ID_RE.match(t) else None
 

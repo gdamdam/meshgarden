@@ -37,7 +37,7 @@ VISITOR_PUBKEY = "aabbccdd" + "11" * 28
 VISITOR_NODE_ID = "!" + VISITOR_PUBKEY[:8]
 
 
-def _cfg(tmp_path, *, radio_kwargs=None, **service_kwargs):
+def _cfg(tmp_path, *, radio_kwargs=None, bbs_path="", **service_kwargs):
     return Config(
         radio=RadioConfig(
             device="/dev/fake",
@@ -46,7 +46,7 @@ def _cfg(tmp_path, *, radio_kwargs=None, **service_kwargs):
             **(radio_kwargs or {}),
         ),
         service=ServiceConfig(lab_unlock_word=LAB_UNLOCK_WORD, **service_kwargs),
-        database=DatabaseConfig(path=str(tmp_path / "o.db")),
+        database=DatabaseConfig(path=str(tmp_path / "o.db"), bbs_path=bbs_path),
         retention=RetentionConfig(),
         backup=BackupConfig(directory=str(tmp_path / "backups")),
         metrics=MetricsConfig(),
@@ -1617,3 +1617,83 @@ def test_other_channel_chatter_is_not_written_to_the_exchange_trace(meshcore_dae
     ft.fake.emit_channel_message(0, "visitor: hello garden")  # watched channel, dm_only mode
     d.drain()
     assert any(a[1] == "broadcast" for a, _k in seen)
+
+
+# --- transport-qualified ids in a shared bbs.db ------------------------------
+
+
+@pytest.fixture
+def shared_meshcore_daemon(tmp_path):
+    d, ft = _start_meshcore_daemon(_cfg(tmp_path, bbs_path=str(tmp_path / "bbs.db")))
+    yield d, ft
+    d.stop()
+
+
+def test_meshcore_sign_stores_qualified_sender(shared_meshcore_daemon):
+    d, ft = shared_meshcore_daemon
+    ft.fake.emit_new_contact(VISITOR_PUBKEY, "visitor")
+    ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], "SIGN hello from meshcore")
+    d.drain()
+    assert [tuple(r) for r in d.conn.execute("SELECT sender_node_id FROM guestbook")] == [
+        ("mc:" + VISITOR_NODE_ID,)
+    ]
+
+
+def test_meshcore_sign_without_shared_bbs_keeps_bare_sender(meshcore_daemon):
+    d, ft = meshcore_daemon
+    ft.fake.emit_new_contact(VISITOR_PUBKEY, "visitor")
+    ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], "SIGN hello from meshcore")
+    d.drain()
+    assert [tuple(r) for r in d.conn.execute("SELECT sender_node_id FROM guestbook")] == [
+        (VISITOR_NODE_ID,)
+    ]
+
+
+def test_meshcore_blocked_sender_qualified_is_blocked(shared_meshcore_daemon):
+    """A block on the Meshtastic node with the same bare id must not touch
+    the MeshCore node, and the MeshCore block must hold."""
+    d, ft = shared_meshcore_daemon
+    ft.fake.emit_new_contact(VISITOR_PUBKEY, "visitor")
+    d.conn.execute("INSERT INTO blocked_senders(node_id, blocked_at) VALUES (?, 0)",
+                   (VISITOR_NODE_ID,))
+    d.conn.commit()
+    ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], "MENU")
+    d.drain()
+    assert len(ft.fake.sent) == 1
+
+    d.conn.execute("INSERT INTO blocked_senders(node_id, blocked_at) VALUES (?, 0)",
+                   ("mc:" + VISITOR_NODE_ID,))
+    d.conn.commit()
+    d.advance_seconds(d.cfg.service.per_node_cooldown_seconds + 1)
+    ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], "PING")
+    d.drain()
+    assert len(ft.fake.sent) == 1
+
+
+def test_meshcore_lab_unlock_qualified(shared_meshcore_daemon):
+    """A Meshtastic node's LAB unlock never unlocks the same bare id here,
+    and a MeshCore unlock is stored qualified."""
+    d, ft = shared_meshcore_daemon
+    ft.fake.emit_new_contact(VISITOR_PUBKEY, "visitor")
+    d.conn.execute("INSERT INTO lab_nodes(node_id, unlocked_at) VALUES (?, 0)",
+                   (VISITOR_NODE_ID,))
+    d.conn.commit()
+    ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], "BOARDS")
+    d.drain()
+    assert ft.fake.sent == []  # still locked: LAB commands answer like UNKNOWN
+
+    ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], LAB_UNLOCK_WORD)
+    d.drain()
+    assert {r[0] for r in d.conn.execute("SELECT node_id FROM lab_nodes")} == {
+        VISITOR_NODE_ID, "mc:" + VISITOR_NODE_ID,
+    }
+    d.advance_seconds(d.cfg.service.per_node_cooldown_seconds + 1)
+    ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], "BOARDS")
+    d.drain()
+    assert len(ft.fake.sent) == 2  # unlock reply, then BOARDS answered
+    d.advance_seconds(d.cfg.service.per_node_cooldown_seconds + 1)
+    ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], "MAIL ON")
+    d.drain()
+    assert [tuple(r) for r in d.conn.execute("SELECT node_id, enabled FROM mail_prefs")] == [
+        ("mc:" + VISITOR_NODE_ID, 1)
+    ]

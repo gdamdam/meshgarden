@@ -59,6 +59,7 @@ from zoneinfo import ZoneInfo
 from meshgarden import (
     __version__,
     advert_control,
+    bbs_ids,
     bbs_store,
     booktrivia,
     cli_ops,
@@ -1094,7 +1095,7 @@ class Daemon:
             tx_request_log=self._tx_request_log,
             metrics=self._metrics,
             expected_node_id=self.cfg.radio.expected_node_id,
-            is_blocked=lambda node_id: is_blocked(self._tx_conn, node_id),
+            is_blocked=lambda node_id: is_blocked(self._tx_conn, self._bbs_id(node_id)),
             clock=self._clock.monotonic,
         )
         # The transport reports a delivery outcome (ack/fail) via this
@@ -1914,7 +1915,8 @@ class Daemon:
         # here -- sending the correct word is exactly how a locked node
         # unlocks the tier.
         lab_locked = (
-            self.cfg.service.lab_unlock_word == "" or not self._lab.is_unlocked(sender_node_id)
+            self.cfg.service.lab_unlock_word == ""
+            or not self._lab.is_unlocked(self._bbs_id(sender_node_id))
         )
         lab_gated_help = parsed.command is Command.CMD_HELP and parsed.argument in LAB_HELP_WORDS
         lab_gated_menu = (
@@ -1974,7 +1976,9 @@ class Daemon:
         )
         if parsed.command == Command.UNKNOWN:
             # Unknown text receives no response.
-            if parsed.rejection_reason is None and not is_blocked(self._db_conn, sender_node_id):
+            if parsed.rejection_reason is None and not is_blocked(
+                self._db_conn, self._bbs_id(sender_node_id)
+            ):
                 usefulness.counter(self._db_conn, "UNKNOWN_REQUESTS", 1, received_at)
             exchange_log.log_rejection(
                 sender_node_id, parsed.rejection_reason or "unknown_command_or_invalid_arguments",
@@ -1995,7 +1999,7 @@ class Daemon:
         packet_id = obs.packet_id
         if packet_id is None:
             return False
-        if is_blocked(self._db_conn, sender_node_id):
+        if is_blocked(self._db_conn, self._bbs_id(sender_node_id)):
             exchange_log.log_rejection(
                 sender_node_id, "blocked", command=parsed.command.value,
                 now=now, packet_id=packet_id,
@@ -2168,15 +2172,16 @@ class Daemon:
         usefulness.record(self._db_conn, sender_node_id, parsed.command.value, now)
         if parsed.command == Command.NEW:
             self._resolve_pending_mail_deliveries(now)
-            lab = bool(self.cfg.service.lab_unlock_word and self._lab.is_unlocked(sender_node_id))
+            bbs_sender = self._bbs_id(sender_node_id)
+            lab = bool(self.cfg.service.lab_unlock_word and self._lab.is_unlocked(bbs_sender))
             body, snapshot = updates.summary(
-                self._db_conn, sender_node_id, now, boards_enabled=lab,
+                self._db_conn, bbs_sender, now, boards_enabled=lab,
                 mail_enabled=(self.cfg.service.mail_public or lab),
                 max_bytes=self._transport.max_text_bytes,
             )
             sent = self._reserve_and_send(sender_node_id, obs, now, body)
             if sent:
-                updates.remember(self._db_conn, sender_node_id, obs.packet_id, snapshot, now)
+                updates.remember(self._db_conn, bbs_sender, obs.packet_id, snapshot, now)
             self._metrics.commands_total.labels("NEW", "accepted" if sent else "queue_full").inc()
             return
         if parsed.command == Command.CHECK:
@@ -2188,7 +2193,9 @@ class Daemon:
         if parsed.command == Command.REPLY:
             parts = parsed.argument.split(None, 1)
             ident = parts[0].removeprefix("#") if parts else ""
-            route = self._mail.lookup_reply_route(int(ident), sender_node_id, now) if (
+            route = self._mail.lookup_reply_route(
+                int(ident), self._bbs_id(sender_node_id), now
+            ) if (
                 len(parts) == 2 and ident.isascii() and ident.isdigit() and len(ident) <= 18
             ) else None
             if route is None:
@@ -2198,8 +2205,11 @@ class Daemon:
                 self._metrics.commands_total.labels(
                     "REPLY", "rejected" if sent else "queue_full").inc()
             else:
+                # The stored sender may belong to the other mesh; its
+                # prefixed form keeps the reply addressed to that mesh.
                 self._handle_mail_send(
-                    sender_node_id, f"{route.sender_node_id} {parts[1]}", obs, now)
+                    sender_node_id, f"{self._bbs_argument(route.sender_node_id)} {parts[1]}",
+                    obs, now)
             return
         if parsed.command == Command.SIGN:
             self._handle_sign(sender_node_id, parsed.argument, obs, now)
@@ -2787,7 +2797,8 @@ class Daemon:
             # (see menu_text's lab_unlocked param); a locked node's menu is
             # unaffected.
             lab_unlocked = (
-                self.cfg.service.lab_unlock_word != "" and self._lab.is_unlocked(sender_node_id)
+                self.cfg.service.lab_unlock_word != ""
+                and self._lab.is_unlocked(self._bbs_id(sender_node_id))
             )
             body = menu_reply_for(argument, lab_unlocked=lab_unlocked,
                                   mail_public=self.cfg.service.mail_public)
@@ -2978,7 +2989,9 @@ class Daemon:
             # touches book_state/book_stats -- see booktrivia.book_score_text.
             body = book_score_text(self._db_conn, day)
         elif raw_argument:
-            key_player = booktrivia.player_key(sender_node_id, day, self.cfg.service.fortune_salt)
+            key_player = booktrivia.player_key(
+                self._bbs_id(sender_node_id), day, self.cfg.service.fortune_salt
+            )
             if booktrivia.has_solved(self._db_conn, key_player, day):
                 body = booktrivia.book_already_solved_text()
             else:
@@ -3084,7 +3097,7 @@ class Daemon:
         day = local_day(now, self.cfg.service.timezone)
         body = wordle_play(
             self._db_conn,
-            sender_node_id=sender_node_id,
+            sender_node_id=self._bbs_id(sender_node_id),
             text_argument=raw_argument,
             day=day,
             salt=self.cfg.service.fortune_salt,
@@ -3247,10 +3260,10 @@ class Daemon:
         signed_count = self._db_conn.execute(
             "SELECT COUNT(*) FROM guestbook WHERE sender_node_id=? AND visible=1 "
             "AND topic IS NULL",
-            (sender_node_id,),
+            (self._bbs_id(sender_node_id),),
         ).fetchone()[0]
-        mail_enabled = self._mail_prefs.get(sender_node_id)
-        mail_pending = self._mail.pending_count(sender_node_id)
+        mail_enabled = self._mail_prefs.get(self._bbs_id(sender_node_id))
+        mail_pending = self._mail.pending_count(self._bbs_id(sender_node_id))
         body = me_text(
             self._transport.display_label(sender_node_id),
             display_name=display_name,
@@ -3295,7 +3308,7 @@ class Daemon:
             self._note_drop(now)
             return
 
-        entry_id = self._guestbook.hide_own_latest(sender_node_id, now)
+        entry_id = self._guestbook.hide_own_latest(self._bbs_id(sender_node_id), now)
         if entry_id is not None:
             self._limiter.reset_sign(sender_node_id)
         body = (
@@ -3382,6 +3395,38 @@ class Daemon:
             self._limiter.commit_command(sender_node_id)
         return True
 
+    def _bbs_id(self, node_id: str) -> str:
+        """The form of a sender/recipient id stored in the BBS tables.
+        Only a shared bbs.db holds both meshes' rows, so a single-file
+        install keeps bare ids (and needs no migration of its rows)."""
+        if self.cfg.database.resolved_bbs_path is None:
+            return node_id
+        return bbs_ids.qualify(node_id, self.cfg.radio.transport)
+
+    def _bbs_local(self, stored: str) -> str | None:
+        """This mesh's bare id for a stored BBS id, or None when it belongs
+        to the other mesh (whose daemon delivers to, protects and names it)."""
+        if self.cfg.database.resolved_bbs_path is None:
+            return stored
+        return bbs_ids.local_or_none(stored, self.cfg.radio.transport)
+
+    def _bbs_argument(self, stored: str) -> str:
+        """A stored BBS id as a MAIL recipient argument naming its mesh."""
+        if self.cfg.database.resolved_bbs_path is None:
+            return stored
+        return bbs_ids.argument_form(stored)
+
+    def _bbs_node_label(self, stored: str) -> str:
+        """Reply label for a stored BBS id. A peer-mesh id gets no name from
+        this mesh's node table: the same bare id there is a different node,
+        so its name would misattribute the message."""
+        local = self._bbs_local(stored)
+        if local is not None:
+            return self._node_report_label(local)
+        transport, bare = bbs_ids.split(stored)
+        prefix = bbs_ids.MESHCORE_PREFIX if transport == "meshcore" else bbs_ids.MESHTASTIC_PREFIX
+        return prefix + self._transport.short_label(bare)
+
     def _lookup_display_name(self, sender_node_id: str) -> str | None:
         """Known node name, sanitized for display; never an identity lookup."""
         return lookup_node_name(self._db_conn, sender_node_id)
@@ -3447,7 +3492,7 @@ class Daemon:
             return
 
         if self._guestbook.is_duplicate_sign(
-            sender_node_id,
+            self._bbs_id(sender_node_id),
             normalized,
             now,
             window_hours=self.cfg.service.identical_sign_dedup_hours,
@@ -3497,7 +3542,7 @@ class Daemon:
         display_name = self._lookup_display_name(sender_node_id)
         with self._db_conn:
             entry_id = self._guestbook.insert(
-                sender_node_id,
+                self._bbs_id(sender_node_id),
                 display_name,
                 normalized,
                 now,
@@ -3583,7 +3628,7 @@ class Daemon:
             return
 
         if self._guestbook.is_duplicate_sign(
-            sender_node_id,
+            self._bbs_id(sender_node_id),
             normalized,
             now,
             window_hours=self.cfg.service.identical_sign_dedup_hours,
@@ -3626,7 +3671,7 @@ class Daemon:
         display_name = self._lookup_display_name(sender_node_id)
         with self._db_conn:
             entry_id = self._guestbook.insert(
-                sender_node_id,
+                self._bbs_id(sender_node_id),
                 display_name,
                 normalized,
                 now,
@@ -3759,9 +3804,9 @@ class Daemon:
         Long notes are delivered over successive explicit MAIL requests. Each
         receipt includes the original body, so overlapping reads are idempotent.
         """
-        pending = self._mail.pending_for(sender_node_id)
+        pending = self._mail.pending_for(self._bbs_id(sender_node_id))
         labels = {
-            node_id: self._node_report_label(node_id)
+            node_id: self._bbs_node_label(node_id)
             for node_id in {e.sender_node_id for e in pending}
         }
         max_bytes = self._transport.max_text_bytes
@@ -3794,7 +3839,8 @@ class Daemon:
         possibly still be attributed), so the dict stays bounded even if a
         state transition is somehow missed."""
         updates.settle(self._db_conn, now,
-                       self.cfg.service.ack_timeout_seconds + self.cfg.service.reply_ttl_seconds)
+                       self.cfg.service.ack_timeout_seconds + self.cfg.service.reply_ttl_seconds,
+                       local_id=self._bbs_local)
         if not self._mail_delivery_pending:
             return
         max_age = self.cfg.service.ack_timeout_seconds + self.cfg.service.reply_ttl_seconds
@@ -3813,7 +3859,7 @@ class Daemon:
         self, sender_node_id: str, enabled: bool, obs: IncomingPacket, now: int
     ) -> None:
         """MAIL ON/OFF: per-node opt-in toggle, default off (ruling 10)."""
-        self._mail_prefs.set(sender_node_id, enabled, now)
+        self._mail_prefs.set(self._bbs_id(sender_node_id), enabled, now)
         body = truncate_utf8(mail_pref_ack_text(enabled), self._transport.max_text_bytes)
         sent = self._reserve_and_send(sender_node_id, obs, now, body)
         outcome = "accepted" if sent else "queue_full"
@@ -3826,12 +3872,15 @@ class Daemon:
         value = argument.strip()
         alias: str | None = None
         if not value:
-            alias = self._mail_aliases.get(sender_node_id)
+            alias = self._mail_aliases.get(self._bbs_id(sender_node_id))
             status = "unchanged" if alias is not None else "none"
         elif value.upper() == "OFF":
-            status = "removed" if self._mail_aliases.release(sender_node_id, now) else "none"
+            status = (
+                "removed" if self._mail_aliases.release(self._bbs_id(sender_node_id), now)
+                else "none"
+            )
         else:
-            status = self._mail_aliases.claim(sender_node_id, value, now)
+            status = self._mail_aliases.claim(self._bbs_id(sender_node_id), value, now)
             alias = normalize_mail_alias(value, allow_at=False)
         body = truncate_utf8(
             mail_alias_text(status, alias), self._transport.max_text_bytes
@@ -3880,6 +3929,23 @@ class Daemon:
             # acknowledgement path as an opted-out/full mailbox. This prevents
             # MAIL from becoming an alias-enumeration oracle.
             recipient = self._mail_aliases.resolve(alias)
+        elif bbs_ids.has_transport_prefix(node_raw):
+            # An explicit mesh prefix names the recipient exactly: no lookup,
+            # since this mesh's node table cannot vouch for the other mesh.
+            recipient = bbs_ids.typed_node_id(
+                node_raw, self.cfg.radio.transport,
+                shared=self.cfg.database.resolved_bbs_path is not None,
+            )
+            if recipient is None:
+                self._db_request_log.set_state(
+                    sender_node_id,
+                    obs.packet_id,
+                    "dropped",
+                    now,
+                    reason=Reject.MAIL_NODE_INVALID.value,
+                )
+                self._metrics.commands_total.labels(Command.MAIL.value, "rejected").inc()
+                return
         else:
             resolution = self._collector.resolve_node(
                 node_raw, parse_node_argument=self._transport.parse_node_argument
@@ -3894,7 +3960,7 @@ class Daemon:
                 )
                 self._metrics.commands_total.labels(Command.MAIL.value, "rejected").inc()
                 return
-            recipient = resolution.node_id
+            recipient = self._bbs_id(resolution.node_id)
 
         try:
             normalized = self._guestbook.validate(message_raw, inbound_payload_len=obs.payload_len)
@@ -3946,7 +4012,8 @@ class Daemon:
                 if match is not None:
                     moderation_reason = moderation.BANNED_WORD_REASON
             self._mail.send(
-                sender_node_id, recipient, normalized, now, moderation_reason=moderation_reason
+                self._bbs_id(sender_node_id), recipient, normalized, now,
+                moderation_reason=moderation_reason,
             )
             self._metrics.mail_notes_stored.inc()
             usefulness.counter(self._db_conn, "MAIL_STORED", 1, now)
@@ -3976,7 +4043,7 @@ class Daemon:
         regardless-of-effect convention as MAIL's opt-in ack. The word
         itself is never included in the reply, a log line, or a metric
         label -- only the bounded `Command.LAB_UNLOCK` value is."""
-        self._lab.unlock(sender_node_id, now)
+        self._lab.unlock(self._bbs_id(sender_node_id), now)
         body = truncate_utf8(lab_text(), self._transport.max_text_bytes)
         sent = self._reserve_and_send(sender_node_id, obs, now, body)
         outcome = "accepted" if sent else "queue_full"
@@ -4122,12 +4189,16 @@ class Daemon:
             return
         last_seen = dict(conn.execute("SELECT node_id, observed_last_seen FROM nodes"))
         protected: set[str] = set(self.cfg.service.mobile_dm_recovery_destinations)
-        for sql in (
-            "SELECT DISTINCT sender_node_id FROM processed_requests",
-            "SELECT node_id FROM lab_nodes",
-            "SELECT node_id FROM mail_prefs",
-        ):
-            protected.update(row[0] for row in conn.execute(sql))
+        protected.update(
+            row[0] for row in conn.execute("SELECT DISTINCT sender_node_id FROM processed_requests")
+        )
+        # BBS tables are shared with the other mesh: only this mesh's ids
+        # name contacts on this radio.
+        for sql in ("SELECT node_id FROM lab_nodes", "SELECT node_id FROM mail_prefs"):
+            protected.update(
+                local for row in conn.execute(sql)
+                if (local := self._bbs_local(row[0])) is not None
+            )
         decision = select_contacts_to_prune(
             contacts, target=target, max_remove=radio.meshcore_contact_prune_max_per_day,
             now=now, last_seen_by_node=last_seen, protected_nodes=protected,
@@ -4751,7 +4822,7 @@ def cmd_guestbook_delete(cfg: Config, entry_id: int, *, topic: str | None = None
 
 
 def cmd_block(cfg: Config, node_id: str) -> int:
-    parsed = parse_node_id_argument(node_id)
+    parsed = cli_ops.bbs_node_argument(cfg, node_id)
     if parsed is None:
         print(f"invalid node id: {node_id!r}", file=sys.stderr)
         return 2
@@ -4773,7 +4844,7 @@ def cmd_block(cfg: Config, node_id: str) -> int:
 
 
 def cmd_unblock(cfg: Config, node_id: str) -> int:
-    parsed = parse_node_id_argument(node_id)
+    parsed = cli_ops.bbs_node_argument(cfg, node_id)
     if parsed is None:
         print(f"invalid node id: {node_id!r}", file=sys.stderr)
         return 2

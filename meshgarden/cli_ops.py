@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from meshgarden import digest, ops, positions
+from meshgarden import bbs_ids, digest, ops, positions
 from meshgarden.fortune import local_iso
 from meshgarden.guestbook import clean_display_name, fallback_display_name, lookup_node_name
 
@@ -37,6 +37,14 @@ if TYPE_CHECKING:
 
 _MIN_LIST_LIMIT = 1
 _MAX_LIST_LIMIT = 1000
+
+
+def bbs_node_argument(cfg: Config, text: str) -> str | None:
+    """A node id argument for a shared BBS table, in its stored form: an
+    `mc:`/`mt:` prefix names the mesh, a bare id means this config's own."""
+    return bbs_ids.typed_node_id(
+        text, cfg.radio.transport, shared=cfg.database.resolved_bbs_path is not None
+    )
 
 
 def _node_label(conn, node_id: str) -> str:
@@ -443,10 +451,9 @@ def cmd_mail_purge(cfg: Config, node_id: str) -> int:
     """Deletes all mail for `node_id`, hidden/moderated notes included --
     an explicit operator write, like `guestbook hide`/`delete` and
     `block`/`unblock`."""
-    from meshgarden.config import parse_node_id_argument
     from meshgarden.database import connect, migrate
 
-    parsed = parse_node_id_argument(node_id)
+    parsed = bbs_node_argument(cfg, node_id)
     if parsed is None:
         print(f"invalid node id: {node_id!r}", file=sys.stderr)
         return 2
@@ -487,11 +494,10 @@ def cmd_mail_alias_list(cfg: Config, *, as_json: bool = False) -> int:
 def cmd_mail_alias_set(
     cfg: Config, node_id: str, alias: str, *, replace_existing: bool = False
 ) -> int:
-    from meshgarden.config import parse_node_id_argument
     from meshgarden.database import connect, migrate
     from meshgarden.mail import MailAliases
 
-    parsed = parse_node_id_argument(node_id)
+    parsed = bbs_node_argument(cfg, node_id)
     if parsed is None:
         print(f"invalid node id: {node_id!r}", file=sys.stderr)
         return 2
@@ -691,10 +697,9 @@ def cmd_positions_delete(
 def cmd_lab_revoke(cfg: Config, node_id: str) -> int:
     """Deletes one node's LAB-tier unlock -- an explicit operator write,
     like `mail purge`/`block`/`unblock`."""
-    from meshgarden.config import parse_node_id_argument
     from meshgarden.database import connect, migrate
 
-    parsed = parse_node_id_argument(node_id)
+    parsed = bbs_node_argument(cfg, node_id)
     if parsed is None:
         print(f"invalid node id: {node_id!r}", file=sys.stderr)
         return 2

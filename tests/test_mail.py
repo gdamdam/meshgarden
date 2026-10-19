@@ -101,3 +101,61 @@ def test_pending_for_is_newest_first(conn):
     mail.send("!11111111", "!22222222", "second", 1001)
     pending = mail.pending_for("!22222222")
     assert [p.message for p in pending] == ["second", "first"]
+
+
+# --- shared bbs.db: Meshtastic daemon side of transport-qualified ids --------
+
+
+@pytest.fixture
+def shared_daemon(tmp_path):
+    from dataclasses import replace
+
+    from meshgarden.main import Daemon
+    from tests.conftest import _cfg, _unlock_standard_lab_senders
+    from tests.fakes import FakeTransport
+
+    cfg = _cfg(tmp_path)
+    cfg = replace(cfg, database=replace(cfg.database, bbs_path=str(tmp_path / "bbs.db")))
+    ft = FakeTransport(0x11223344, cfg.radio.expected_node_id, service_cfg=cfg.service)
+    d = Daemon(cfg, transport=ft, start_metrics=False)
+    d.iface = ft.iface
+    d.start()
+    _unlock_standard_lab_senders(d.conn)
+    yield d
+    d.stop()
+
+
+def _dm(daemon, text, packet_id, from_num=0xAABBCCDD):
+    from tests.fakes import make_packet
+
+    daemon.iface.emit_packet(make_packet(
+        to_num=daemon.my_node_num, from_num=from_num, text=text, packet_id=packet_id))
+    daemon.drain()
+
+
+def test_meshtastic_sign_stores_bare_sender(shared_daemon):
+    _dm(shared_daemon, "SIGN hello from meshtastic", 9501)
+    rows = [tuple(r) for r in shared_daemon.conn.execute("SELECT sender_node_id FROM guestbook")]
+    assert rows == [("!aabbccdd",)]
+
+
+def test_meshtastic_daemon_skips_mc_mail_delivery(shared_daemon):
+    """Mail for the MeshCore node with the same bare id is that mesh's:
+    MAIL from the Meshtastic node must neither show nor consume it."""
+    d = shared_daemon
+    MailPrefs(d.conn).set("!aabbccdd", True, 1000)
+    Mail(d.conn).send("mc:!12345678", "mc:!aabbccdd", "secret for meshcore", 1000)
+    _dm(d, "MAIL", 9502)
+    assert "secret for meshcore" not in d.iface.sent[-1]["text"]
+    assert Mail(d.conn).pending_count("mc:!aabbccdd") == 1
+
+
+def test_cross_mesh_mail_send_to_mc_prefix(shared_daemon):
+    d = shared_daemon
+    MailPrefs(d.conn).set("mc:!ffeeddcc", True, 1000)
+    _dm(d, "MAIL mc:!FFEEDDCC hello other mesh", 9503)
+    rows = [tuple(r) for r in d.conn.execute(
+        "SELECT sender_node_id, recipient_node_id, message FROM mail")]
+    assert rows == [("!aabbccdd", "mc:!ffeeddcc", "hello other mesh")]
+    # The bare id is this mesh's node, a different mailbox.
+    assert Mail(d.conn).pending_count("!ffeeddcc") == 0

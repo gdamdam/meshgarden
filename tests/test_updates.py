@@ -142,3 +142,22 @@ def test_summary_respects_120_utf8_byte_budget(conn):
         news(conn, ident, 100)
     text, _ = summary(conn, node, 100, boards_enabled=True, mail_enabled=True, max_bytes=120)
     assert len(text.encode("utf-8")) <= 120
+
+
+def test_settle_maps_qualified_ids_and_leaves_the_other_meshs_rows(conn):
+    """update_pending is shared between meshes; processed_requests is not."""
+    from meshgarden.bbs_ids import local_or_none
+
+    news(conn, 1, 100)
+    _, snapshot = summary(conn, "mc:!aabbccdd", 100)
+    remember(conn, "mc:!aabbccdd", 20, snapshot, 100)
+    remember(conn, "!99999999", 21, snapshot, 100)  # the Meshtastic daemon's
+    request(conn, "!aabbccdd", 20, "acked")  # request log keeps bare ids
+    settle(conn, 200, max_age=10, local_id=lambda s: local_or_none(s, "meshcore"))
+    row = conn.execute(
+        "SELECT snapshot FROM update_cursors WHERE node_id='mc:!aabbccdd'"
+    ).fetchone()
+    assert json.loads(row[0]) == snapshot
+    assert conn.execute(
+        "SELECT 1 FROM update_pending WHERE node_id='!99999999'"
+    ).fetchone() is not None

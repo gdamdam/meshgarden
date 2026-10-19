@@ -72,14 +72,23 @@ def remember(conn, node_id, packet_id, snapshot, now):
         )
 
 
-def settle(conn: sqlite3.Connection, now: int, max_age: int):
-    rows = conn.execute(
-        "SELECT p.*,r.state FROM update_pending p LEFT JOIN processed_requests r "
-        "ON r.sender_node_id=p.node_id AND r.packet_id=p.packet_id"
-    ).fetchall()
+def settle(conn: sqlite3.Connection, now: int, max_age: int, *, local_id=lambda node_id: node_id):
+    """`local_id` maps a stored (possibly mesh-qualified) id to this daemon's
+    bare request-log id, or None for the other mesh's row: update_pending
+    may be shared, while processed_requests is this daemon's own, so a
+    foreign row has no state here and must be left for its own daemon."""
+    rows = conn.execute("SELECT * FROM update_pending").fetchall()
     with conn:
         for row in rows:
-            if row["state"] == "acked":
+            local = local_id(row["node_id"])
+            if local is None:
+                continue
+            req = conn.execute(
+                "SELECT state FROM processed_requests WHERE sender_node_id=? AND packet_id=?",
+                (local, row["packet_id"]),
+            ).fetchone()
+            state = req["state"] if req else None
+            if state == "acked":
                 old = conn.execute(
                     "SELECT snapshot FROM update_cursors WHERE node_id=?", (row["node_id"],)
                 ).fetchone()
@@ -92,7 +101,7 @@ def settle(conn: sqlite3.Connection, now: int, max_age: int):
                     (row["node_id"], json.dumps(merged), now),
                 )
             elif (
-                row["state"] not in ("failed", "dropped", "expired", "unknown", None)
+                state not in ("failed", "dropped", "expired", "unknown", None)
                 and now - row["created_at"] <= max_age
             ):
                 continue

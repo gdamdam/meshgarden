@@ -17,6 +17,7 @@ import re
 import sqlite3
 import unicodedata
 
+from meshgarden.bbs_ids import MESHCORE_PREFIX
 from meshgarden.commands import Reject
 from meshgarden.config import MAX_PAYLOAD_BYTES, ServiceConfig
 from meshgarden.fortune import local_day
@@ -380,8 +381,11 @@ def fallback_display_name(sender_node_id: str) -> str:
 
     Shared by the radio reply's GUESTBOOK formatter (`format_guestbook`,
     below) and the CLI's `guestbook list`, so both ever present the exact
-    same fallback label for an entry with no stored display name."""
-    return sender_node_id.removeprefix("!")[-4:]
+    same fallback label for an entry with no stored display name.
+
+    A shared-BBS MeshCore id (`mc:!xxxxxxxx`) yields the same 4-hex tail as
+    its bare form."""
+    return sender_node_id.removeprefix(MESHCORE_PREFIX).removeprefix("!")[-4:]
 
 
 def clean_display_name(*names: str | None) -> str | None:
@@ -398,8 +402,10 @@ def lookup_node_name(conn: sqlite3.Connection, node_id: str | None) -> str | Non
     """Latest known display name; labels never replace IDs for identity decisions."""
     if node_id is None:
         return None
+    # The nodes table holds bare ids; a shared-BBS id carries a mesh prefix.
     row = conn.execute(
-        "SELECT short_name, long_name FROM nodes WHERE node_id=?", (node_id,)
+        "SELECT short_name, long_name FROM nodes WHERE node_id=?",
+        (node_id.removeprefix(MESHCORE_PREFIX),),
     ).fetchone()
     return clean_display_name(row["short_name"], row["long_name"]) if row else None
 
