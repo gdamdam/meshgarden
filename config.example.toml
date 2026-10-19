@@ -133,6 +133,10 @@ lab_unlock_word = ""
 [database]
 # Path to the SQLite database file (WAL mode; -wal/-shm siblings live alongside it).
 path = "/var/lib/meshtastic-observatory/observatory.db"
+# Shared BBS file (guestbook, news, mail, games) so a Meshtastic and a MeshCore daemon serve one garden. Unset keeps everything in path.
+# bbs_path = "/var/lib/meshgarden/bbs.db"
+# The other mesh's observatory.db, read for the peer view. Unset means no peer.
+# peer_path = "/var/lib/meshgarden-meshcore/observatory.db"
 
 [retention]
 # Days raw observations/observatory-only node records are kept (configurable metadata-field retention; fields collected are fixed in code).

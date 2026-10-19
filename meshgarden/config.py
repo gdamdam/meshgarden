@@ -247,6 +247,17 @@ class ServiceConfig:
 @dataclass(frozen=True)
 class DatabaseConfig:
     path: str
+    # Shared BBS file (guestbook/news/mail/...) attached as schema "bbs" so
+    # a Meshtastic and a MeshCore daemon serve one garden. "" keeps the
+    # legacy single-file layout: opt-in, so a 1.x install never migrates
+    # silently.
+    bbs_path: str = ""
+    # The other mesh's observatory.db (read-only peer view). "" = no peer.
+    peer_path: str = ""
+
+    @property
+    def resolved_bbs_path(self) -> str | None:
+        return self.bbs_path or None
 
 
 @dataclass(frozen=True)
@@ -712,7 +723,20 @@ def _parse_database(table: dict) -> DatabaseConfig:
     if "path" not in table:
         raise ConfigError("database.path is required")
     _require_str(table["path"], "database", "path")
-    return DatabaseConfig(path=table["path"])
+    bbs_path = table.get("bbs_path", "")
+    peer_path = table.get("peer_path", "")
+    _require_str(bbs_path, "database", "bbs_path")
+    _require_str(peer_path, "database", "peer_path")
+    # Any two of these sharing a file would make the split migration copy a
+    # table onto itself (or the peer view read our own writes).
+    path = table["path"]
+    if bbs_path and bbs_path == path:
+        raise ConfigError("database.bbs_path must differ from database.path")
+    if peer_path and peer_path == path:
+        raise ConfigError("database.peer_path must differ from database.path")
+    if peer_path and bbs_path and peer_path == bbs_path:
+        raise ConfigError("database.peer_path must differ from database.bbs_path")
+    return DatabaseConfig(path=path, bbs_path=bbs_path, peer_path=peer_path)
 
 
 def _parse_retention(table: dict) -> RetentionConfig:

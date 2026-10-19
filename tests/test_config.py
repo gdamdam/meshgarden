@@ -990,3 +990,43 @@ def test_radio_contact_prune_rejects_out_of_range(key, bad):
     d["radio"][key] = bad
     with pytest.raises(ConfigError, match=key):
         parse_config(d)
+
+
+def test_database_bbs_and_peer_default_empty():
+    c = parse_config(minimal())
+    assert (c.database.bbs_path, c.database.peer_path) == ("", "")
+    # Unset bbs_path means legacy single-file mode, not an auto-default.
+    assert c.database.resolved_bbs_path is None
+
+
+def test_database_bbs_path_parsed():
+    raw = minimal()
+    raw["database"]["bbs_path"] = "/tmp/bbs.db"
+    raw["database"]["peer_path"] = "/tmp/peer.db"
+    c = parse_config(raw)
+    assert c.database.bbs_path == "/tmp/bbs.db"
+    assert c.database.resolved_bbs_path == "/tmp/bbs.db"
+    assert c.database.peer_path == "/tmp/peer.db"
+
+
+def test_database_peer_path_equal_to_path_rejected():
+    raw = minimal()
+    raw["database"]["peer_path"] = raw["database"]["path"]
+    with pytest.raises(ConfigError, match="peer_path"):
+        parse_config(raw)
+    raw = minimal()
+    raw["database"]["bbs_path"] = "/tmp/bbs.db"
+    raw["database"]["peer_path"] = "/tmp/bbs.db"
+    with pytest.raises(ConfigError, match="peer_path"):
+        parse_config(raw)
+
+
+def test_database_bbs_path_equal_to_path_rejected():
+    raw = minimal()
+    raw["database"]["bbs_path"] = raw["database"]["path"]
+    with pytest.raises(ConfigError, match="bbs_path"):
+        parse_config(raw)
+    raw = minimal()
+    raw["database"]["bbs_path"] = 5
+    with pytest.raises(ConfigError, match="bbs_path"):
+        parse_config(raw)

@@ -124,6 +124,8 @@ Notes:
 | Key | Default | Meaning |
 |---|---|---|
 | `path` | required | SQLite file path |
+| `bbs_path` | `""` | Shared BBS SQLite file attached as `bbs`; BBS tables move there on first start. `""` keeps everything in `path` |
+| `peer_path` | `""` | The other mesh's `observatory.db` for the peer view; `""` means no peer |
 
 ## `[retention]`
 
