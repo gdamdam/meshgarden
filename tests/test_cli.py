@@ -1294,3 +1294,26 @@ def test_status_shows_the_radio_node_name(cfgfile, capsys):
     path, conn = cfgfile
     assert main(["--config", path, "status"]) == 0
     assert "node_name: None" in capsys.readouterr().out
+
+
+def test_radio_watchdog_polls_every_instance_with_its_own_state(cfgfile, tmp_path, capsys,
+                                                               monkeypatch):
+    from meshgarden import watchdog
+
+    path, _conn = cfgfile
+    mc = _second_instance(tmp_path)
+    monkeypatch.delenv("MESHGARDEN_WATCHDOG_STATE", raising=False)
+    monkeypatch.setenv("MESHGARDEN_WATCHDOG_ENV_FILE", "/nonexistent/watchdog.env")
+    calls = []
+
+    def fake_run_once(**kw):
+        calls.append((kw["state_path"], kw["label"], kw["detect_reboot"], kw["device"]))
+        return "ok"
+
+    monkeypatch.setattr(watchdog, "run_once", fake_run_once)
+    assert main(["--config", path, "radio-watchdog"]) == 0
+    out = capsys.readouterr().out
+    assert "radio watchdog Meshtastic: ok" in out and "radio watchdog MeshCore: ok" in out
+    assert [c[1:3] for c in calls] == [("Meshtastic", True), ("MeshCore", False)]
+    assert len({c[0] for c in calls}) == 2 and str(tmp_path / "second") in calls[1][0]
+    assert all(c[3] == "/dev/fake" for c in calls) and mc

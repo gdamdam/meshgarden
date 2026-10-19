@@ -9,6 +9,18 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.12.2] - 2026-10-19
+
+### Changed
+
+- `mgarden radio-watchdog` polls every instance configured beside the selected config (e.g. both
+  MeshCore and Meshtastic), each with its own state file, and names the mesh in its alerts. The
+  host-reboot page is sent once.
+- Without `MESHGARDEN_WATCHDOG_HUB`, the watchdog's recovery step is now a soft USB reset of the
+  radio's own device (sysfs `authorized` 0 then 1) instead of a uhubctl power cycle on the default
+  hub `1-1` port `4`, which could name the wrong port. It recovers ESP32-S3 radios whose USB serial
+  link wedges after a firmware reboot. Setting `MESHGARDEN_WATCHDOG_HUB` keeps the power cycle.
+
 ## [1.12.1] - 2026-10-19
 
 ### Changed

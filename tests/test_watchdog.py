@@ -515,3 +515,77 @@ def test_run_once_pages_about_a_reboot_before_any_outage_alert(tmp_path):
         _clues=lambda: [],
     )
     assert sent == ["Meshgarden host rebooted"]
+
+
+# -- soft USB reset and several instances -----------------------------
+
+
+def _fake_sysfs(tmp_path):
+    """/sys/class/tty/ttyACM1/device -> .../1-1.2/1-1.2:1.0, with the
+    `authorized` switch on the USB device, plus a by-id style symlink."""
+    sys_root = tmp_path / "sys"
+    usb = sys_root / "devices" / "usb1" / "1-1" / "1-1.2"
+    iface = usb / "1-1.2:1.0"
+    iface.mkdir(parents=True)
+    (usb / "idVendor").write_text("2886\n")
+    (usb / "authorized").write_text("1\n")
+    tty = sys_root / "class" / "tty" / "ttyACM1"
+    tty.mkdir(parents=True)
+    (tty / "device").symlink_to(iface)
+    dev = tmp_path / "dev"
+    dev.mkdir()
+    (dev / "ttyACM1").write_text("")
+    (dev / "by-id-radio").symlink_to(dev / "ttyACM1")
+    return sys_root, usb / "authorized", str(dev / "by-id-radio")
+
+
+def test_usb_reset_toggles_only_the_radios_own_device(tmp_path):
+    sys_root, switch, device = _fake_sysfs(tmp_path)
+    writes = []
+
+    def spy_sleep(seconds):
+        writes.append(switch.read_text())
+
+    assert wd.usb_reset(device, sys_root=str(sys_root), _sleep=spy_sleep)
+    assert writes == ["0"] and switch.read_text() == "1"
+
+
+def test_usb_reset_missing_device_is_reported_not_raised(tmp_path):
+    sys_root, switch, _ = _fake_sysfs(tmp_path)
+    assert wd.usb_reset(str(tmp_path / "dev" / "gone"), sys_root=str(sys_root),
+                        _sleep=lambda s: None) is False
+    assert switch.read_text() == "1\n"
+
+
+def test_run_once_uses_usb_reset_without_a_hub_and_labels_alerts(tmp_path):
+    p = tmp_path / "state.json"
+    wd.save_state(p, _state(bad_since=0.0))
+    sent, resets, cycles = [], [], []
+    wd.run_once(
+        metrics=MetricsConfig(), state_path=p, env={wd.ENV_NTFY_URL: "https://n/t"},
+        now=1000.0, device="/dev/radio", label="Meshtastic", detect_reboot=False,
+        _poll=lambda url: "radio_down",
+        _notify=lambda url, title, body, **kw: sent.append(title) or True,
+        _cycle=lambda **kw: cycles.append(kw) or True,
+        _usb_reset=lambda dev: resets.append(dev) or True,
+        _boot_id=lambda: (_ for _ in ()).throw(AssertionError("no reboot check")),
+    )
+    assert resets == ["/dev/radio"] and cycles == []
+    assert sent == ["Meshgarden Meshtastic radio down",
+                    "Meshgarden Meshtastic resetting the radio's USB link"]
+
+
+def test_run_once_keeps_the_hub_power_cycle_when_a_hub_is_configured(tmp_path):
+    p = tmp_path / "state.json"
+    wd.save_state(p, _state(bad_since=0.0))
+    resets, cycles = [], []
+    wd.run_once(
+        metrics=MetricsConfig(), state_path=p,
+        env={wd.ENV_UHUBCTL_LOCATION: "1-1", wd.ENV_UHUBCTL_PORT: "2"},
+        now=1000.0, device="/dev/radio",
+        _poll=lambda url: "radio_down", _notify=lambda *a, **k: True,
+        _cycle=lambda **kw: cycles.append(kw) or True,
+        _usb_reset=lambda dev: resets.append(dev) or True,
+        _boot_id=lambda: None, _clues=lambda: [],
+    )
+    assert cycles == [{"hub": "1-1", "port": "2"}] and resets == []

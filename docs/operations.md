@@ -566,6 +566,16 @@ minute; it polls the metrics endpoint and sorts the result into three states:
 Power-cycling cannot fix a stopped daemon (possibly stopped by you for maintenance), hence the
 split.
 
+- **Every instance.** One timer run polls each instance configured beside
+  `/etc/meshgarden/config.toml` (e.g. `mt.toml`), each on its own metrics port and with its own
+  state file next to its database. Alerts name the mesh ("Meshgarden Meshtastic radio down"); the
+  host-reboot page is sent once.
+- **Recovery without a hub.** With `MESHGARDEN_WATCHDOG_HUB` unset, the recovery step is a soft
+  USB reset of that radio alone: its sysfs `authorized` switch goes 0 then 1, so the kernel
+  re-enumerates it. This fixes the ESP32-S3 boards whose USB serial link wedges after a firmware
+  reboot (every open fails with `EIO`). Same grace, caps and cooldown as a power cycle. With a hub
+  configured, the uhubctl power cycle is used as before.
+
 - **Anti-flap.** Nothing happens until the fault has lasted `MESHGARDEN_WATCHDOG_GRACE_SECONDS`
   (default 300), because the radio re-enumerates on any config change from the phone app. A
   recovery inside the grace period is silent. Escalation is latched: one page per outage.

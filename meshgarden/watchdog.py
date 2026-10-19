@@ -68,6 +68,10 @@ class Thresholds:
     grace_seconds: float = _DEFAULT_GRACE_SECONDS
     max_cycles_per_day: int = _DEFAULT_MAX_CYCLES_PER_DAY
     cycle_cooldown_seconds: float = _DEFAULT_CYCLE_COOLDOWN_SECONDS
+    # "power": uhubctl port power cycle. "usb_reset": de-authorize and
+    # re-authorize the radio's own USB device, for hosts without a
+    # power-switching hub. Same caps and cooldown either way.
+    recovery: str = "power"
 
 
 @dataclass
@@ -380,7 +384,8 @@ def decide(
     decision.cycle = True
     decision.notifications.append(
         (
-            "Meshgarden power-cycling the radio",
+            "Meshgarden resetting the radio's USB link"
+            if cfg.recovery == "usb_reset" else "Meshgarden power-cycling the radio",
             f"Attempt {used + 1} of {cfg.max_cycles_per_day} today.",
         )
     )
@@ -573,28 +578,87 @@ def cycle_radio(
     return True
 
 
+def usb_reset(
+    device: str,
+    *,
+    sys_root: str = "/sys",
+    delay_seconds: float = 2.0,
+    _sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Soft-reset the radio's own USB device: write 0, then 1, to its sysfs
+    `authorized` switch, which makes the kernel drop and re-enumerate it.
+
+    For a board whose USB serial link wedges after a firmware reboot (seen
+    on ESP32-S3 Meshtastic radios): the port then fails every open with
+    EIO, and only re-enumeration brings it back. Unlike a hub power cycle
+    it touches nothing but this one device, and needs no special hub.
+    Needs root. Never raises, like `cycle_radio`.
+    """
+    try:
+        tty = os.path.basename(os.path.realpath(device))
+        node = os.path.realpath(os.path.join(sys_root, "class", "tty", tty, "device"))
+        root = os.path.realpath(sys_root)
+        # The tty belongs to a USB *interface* (e.g. 1-1.2:1.0); the switch
+        # lives on its parent USB device, the first ancestor with idVendor.
+        while node.startswith(root + os.sep) and not (
+            os.path.exists(os.path.join(node, "authorized"))
+            and os.path.exists(os.path.join(node, "idVendor"))
+        ):
+            node = os.path.dirname(node)
+        switch = os.path.join(node, "authorized")
+        if not node.startswith(root + os.sep) or not os.path.exists(switch):
+            log.error("no USB device found for %s", device)
+            return False
+        with open(switch, "w") as f:
+            f.write("0")
+        _sleep(delay_seconds)
+        with open(switch, "w") as f:
+            f.write("1")
+    except OSError as exc:
+        log.error("USB reset of %s failed: %s: %s", device, type(exc).__name__, exc)
+        return False
+    log.warning("reset the USB link of %s (%s)", device, os.path.basename(node))
+    return True
+
+
 def run_once(
     *,
     metrics: MetricsConfig,
     state_path: str | Path,
     env: Mapping[str, str] | None = None,
     now: float | None = None,
+    device: str | None = None,
+    label: str = "",
+    detect_reboot: bool = True,
+    _usb_reset: Callable[..., bool] | None = None,
     _poll: Callable[..., str] | None = None,
     _notify: Callable[..., bool] | None = None,
     _cycle: Callable[..., bool] | None = None,
     _boot_id: Callable[[], str | None] | None = None,
     _clues: Callable[[], list[str]] | None = None,
 ) -> str:
-    """One poll: read status, decide, act, persist. Returns the status."""
+    """One poll: read status, decide, act, persist. Returns the status.
+
+    `device` (the instance's radio.device) enables the soft USB reset when
+    no hub is configured (`MESHGARDEN_WATCHDOG_HUB` unset); without it the
+    uhubctl power cycle is used as before. `label` (e.g. "Meshtastic")
+    names the instance in alerts when one host runs several, and
+    `detect_reboot=False` leaves host-reboot paging to the first instance."""
     env = os.environ if env is None else env
     cfg = thresholds_from_env(env)
+    soft = device is not None and not env.get(ENV_UHUBCTL_LOCATION)
+    if soft:
+        cfg = Thresholds(cfg.grace_seconds, cfg.max_cycles_per_day,
+                         cfg.cycle_cooldown_seconds, recovery="usb_reset")
     now = time.time() if now is None else now
     url = metrics_url(metrics)
     status = (_poll or poll_status)(url)
 
     state = load_state(state_path)
     last_seen_at = state.get("last_seen_at")
-    state, rebooted = note_boot(state, boot_id=(_boot_id or read_boot_id)(), now=now)
+    rebooted = False
+    if detect_reboot:
+        state, rebooted = note_boot(state, boot_id=(_boot_id or read_boot_id)(), now=now)
     decision = decide(
         state,
         status=status,
@@ -617,10 +681,14 @@ def run_once(
             ),
         )
     for title, body in decision.notifications:
+        if label and title.startswith("Meshgarden ") and "host rebooted" not in title:
+            title = f"Meshgarden {label} " + title.removeprefix("Meshgarden ")
         (_notify or notify)(
             ntfy_url, title, body, priority="high" if "recovered" not in title else "default"
         )
-    if decision.cycle:
+    if decision.cycle and soft:
+        (_usb_reset or usb_reset)(device)
+    elif decision.cycle:
         (_cycle or cycle_radio)(
             hub=env.get(ENV_UHUBCTL_LOCATION, "1-1"),
             port=env.get(ENV_UHUBCTL_PORT, "4"),

@@ -5462,7 +5462,7 @@ def cmd_advert(cfg: Config) -> int:
     return 0 if ok else 1
 
 
-def cmd_radio_watchdog(cfg: Config) -> int:
+def cmd_radio_watchdog(cfg: Config, config_path: str | None = None) -> int:
     """One watchdog poll, for the systemd timer.
 
     Exits 0 whenever the poll itself completed, even when the radio is
@@ -5471,18 +5471,28 @@ def cmd_radio_watchdog(cfg: Config) -> int:
     a genuinely broken watchdog in `systemctl --failed`).
     """
     env = watchdog.effective_env()
-    state_path = env.get(
-        watchdog.ENV_STATE_PATH, os.path.join(_database_dir(cfg), "watchdog-state.json")
-    )
-    try:
-        status = watchdog.run_once(
-            metrics=cfg.metrics, state_path=state_path, env=env
-        )
-    except Exception as exc:
-        print(f"watchdog poll failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
-    print(f"radio watchdog: {status}")
-    return 0
+    instances = _status_instances(cfg, config_path)
+    rc = 0
+    for index, (_path, instance) in enumerate(instances):
+        # Each instance keeps its own outage latch and cycle counter beside
+        # its own database; MESHGARDEN_WATCHDOG_STATE overrides the first.
+        default_state = os.path.join(_database_dir(instance), "watchdog-state.json")
+        state_path = env.get(watchdog.ENV_STATE_PATH, default_state) if index == 0 \
+            else default_state
+        label = _MESH_LABELS[instance.radio.transport] if len(instances) > 1 else ""
+        try:
+            status = watchdog.run_once(
+                metrics=instance.metrics, state_path=state_path, env=env,
+                device=instance.radio.device or None, label=label,
+                detect_reboot=index == 0,
+            )
+        except Exception as exc:
+            print(f"watchdog poll failed{' (' + label + ')' if label else ''}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            rc = 1
+            continue
+        print(f"radio watchdog{' ' + label if label else ''}: {status}")
+    return rc
 
 
 def cmd_backup(cfg: Config) -> int:
@@ -6110,7 +6120,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "notify-test":
             return cmd_notify_test(cfg)
         if args.command == "radio-watchdog":
-            return cmd_radio_watchdog(cfg)
+            return cmd_radio_watchdog(cfg, config_path)
         if args.command == "books":
             return cmd_books(cfg, as_json=args.json)
         if args.command == "wordle":
