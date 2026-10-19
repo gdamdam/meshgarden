@@ -19,7 +19,9 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 - Without `MESHGARDEN_WATCHDOG_HUB`, the watchdog's recovery step is now a soft USB reset of the
   radio's own device (sysfs `authorized` 0 then 1) instead of a uhubctl power cycle on the default
   hub `1-1` port `4`, which could name the wrong port. It recovers ESP32-S3 radios whose USB serial
-  link wedges after a firmware reboot. Setting `MESHGARDEN_WATCHDOG_HUB` keeps the power cycle.
+  link wedges after a firmware reboot. A configured `MESHGARDEN_WATCHDOG_HUB`/`_HUB_PORT` is
+  power-cycled only for the radio actually on that port; another instance's radio gets the soft
+  reset, never a cycle of the wrong port.
 
 ## [1.12.1] - 2026-10-19
 

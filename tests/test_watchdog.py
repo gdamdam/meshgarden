@@ -586,6 +586,25 @@ def test_run_once_keeps_the_hub_power_cycle_when_a_hub_is_configured(tmp_path):
         _poll=lambda url: "radio_down", _notify=lambda *a, **k: True,
         _cycle=lambda **kw: cycles.append(kw) or True,
         _usb_reset=lambda dev: resets.append(dev) or True,
+        _usb_dir=lambda dev: "/sys/devices/usb1/1-1/1-1.2",
         _boot_id=lambda: None, _clues=lambda: [],
     )
     assert cycles == [{"hub": "1-1", "port": "2"}] and resets == []
+
+
+def test_run_once_never_power_cycles_another_radios_hub_port(tmp_path):
+    """Two radios, hub port 4 configured for the MeshCore one: the
+    Meshtastic radio on port 2 gets its own soft reset, never port 4."""
+    p = tmp_path / "state.json"
+    wd.save_state(p, _state(bad_since=0.0))
+    resets, cycles = [], []
+    wd.run_once(
+        metrics=MetricsConfig(), state_path=p,
+        env={wd.ENV_UHUBCTL_LOCATION: "1-1", wd.ENV_UHUBCTL_PORT: "4"},
+        now=1000.0, device="/dev/mt-radio", detect_reboot=False,
+        _poll=lambda url: "radio_down", _notify=lambda *a, **k: True,
+        _cycle=lambda **kw: cycles.append(kw) or True,
+        _usb_reset=lambda dev: resets.append(dev) or True,
+        _usb_dir=lambda dev: "/sys/devices/usb1/1-1/1-1.2",
+    )
+    assert resets == ["/dev/mt-radio"] and cycles == []

@@ -578,6 +578,23 @@ def cycle_radio(
     return True
 
 
+def usb_device_dir(device: str, *, sys_root: str = "/sys") -> str | None:
+    """The sysfs directory of the USB device behind serial `device` (its
+    basename is the bus path, e.g. "1-1.4" = hub 1-1, port 4), or None."""
+    tty = os.path.basename(os.path.realpath(device))
+    node = os.path.realpath(os.path.join(sys_root, "class", "tty", tty, "device"))
+    root = os.path.realpath(sys_root)
+    # The tty belongs to a USB *interface* (e.g. 1-1.2:1.0); the device is
+    # its first ancestor carrying idVendor and the `authorized` switch.
+    while node.startswith(root + os.sep):
+        if os.path.exists(os.path.join(node, "authorized")) and os.path.exists(
+            os.path.join(node, "idVendor")
+        ):
+            return node
+        node = os.path.dirname(node)
+    return None
+
+
 def usb_reset(
     device: str,
     *,
@@ -595,20 +612,11 @@ def usb_reset(
     Needs root. Never raises, like `cycle_radio`.
     """
     try:
-        tty = os.path.basename(os.path.realpath(device))
-        node = os.path.realpath(os.path.join(sys_root, "class", "tty", tty, "device"))
-        root = os.path.realpath(sys_root)
-        # The tty belongs to a USB *interface* (e.g. 1-1.2:1.0); the switch
-        # lives on its parent USB device, the first ancestor with idVendor.
-        while node.startswith(root + os.sep) and not (
-            os.path.exists(os.path.join(node, "authorized"))
-            and os.path.exists(os.path.join(node, "idVendor"))
-        ):
-            node = os.path.dirname(node)
-        switch = os.path.join(node, "authorized")
-        if not node.startswith(root + os.sep) or not os.path.exists(switch):
+        node = usb_device_dir(device, sys_root=sys_root)
+        if node is None:
             log.error("no USB device found for %s", device)
             return False
+        switch = os.path.join(node, "authorized")
         with open(switch, "w") as f:
             f.write("0")
         _sleep(delay_seconds)
@@ -631,6 +639,7 @@ def run_once(
     label: str = "",
     detect_reboot: bool = True,
     _usb_reset: Callable[..., bool] | None = None,
+    _usb_dir: Callable[[str], str | None] | None = None,
     _poll: Callable[..., str] | None = None,
     _notify: Callable[..., bool] | None = None,
     _cycle: Callable[..., bool] | None = None,
@@ -639,14 +648,21 @@ def run_once(
 ) -> str:
     """One poll: read status, decide, act, persist. Returns the status.
 
-    `device` (the instance's radio.device) enables the soft USB reset when
-    no hub is configured (`MESHGARDEN_WATCHDOG_HUB` unset); without it the
-    uhubctl power cycle is used as before. `label` (e.g. "Meshtastic")
-    names the instance in alerts when one host runs several, and
+    `device` (the instance's radio.device) enables the soft USB reset. The
+    configured hub port (`MESHGARDEN_WATCHDOG_HUB`/`_HUB_PORT`) is power-
+    cycled only when it is this radio's own port: on a host with two
+    radios it names one of them, and cycling it for the other radio would
+    cut the wrong one. Without `device`, the hub cycle is used as before.
+    `label` (e.g. "Meshtastic") names the instance in alerts when one host runs several, and
     `detect_reboot=False` leaves host-reboot paging to the first instance."""
     env = os.environ if env is None else env
     cfg = thresholds_from_env(env)
-    soft = device is not None and not env.get(ENV_UHUBCTL_LOCATION)
+    hub, port = env.get(ENV_UHUBCTL_LOCATION, ""), env.get(ENV_UHUBCTL_PORT, "4")
+    soft = False
+    if device is not None:
+        usb_dir = (_usb_dir or usb_device_dir)(device)
+        own_port = usb_dir is not None and os.path.basename(usb_dir) == f"{hub}.{port}"
+        soft = not (hub and own_port)
     if soft:
         cfg = Thresholds(cfg.grace_seconds, cfg.max_cycles_per_day,
                          cfg.cycle_cooldown_seconds, recovery="usb_reset")

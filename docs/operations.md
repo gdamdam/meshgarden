@@ -573,8 +573,10 @@ split.
 - **Recovery without a hub.** With `MESHGARDEN_WATCHDOG_HUB` unset, the recovery step is a soft
   USB reset of that radio alone: its sysfs `authorized` switch goes 0 then 1, so the kernel
   re-enumerates it. This fixes the ESP32-S3 boards whose USB serial link wedges after a firmware
-  reboot (every open fails with `EIO`). Same grace, caps and cooldown as a power cycle. With a hub
-  configured, the uhubctl power cycle is used as before.
+  reboot (every open fails with `EIO`). Same grace, caps and cooldown as a power cycle. A configured
+  hub port is power-cycled only for the radio that is actually on it (matched by its USB bus path,
+  e.g. `1-1.4`); the other instance's radio gets the soft reset, so a two-radio host never cuts
+  the wrong one.
 
 - **Anti-flap.** Nothing happens until the fault has lasted `MESHGARDEN_WATCHDOG_GRACE_SECONDS`
   (default 300), because the radio re-enumerates on any config change from the phone app. A
