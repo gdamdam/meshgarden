@@ -9,6 +9,23 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.11.2] - 2026-10-19
+
+### Fixed
+
+- One-time repair for a `bbs.db` already split by 1.11.0, which 1.11.1's
+  split-time fixes never reached: id sequences are lifted above every mail id
+  still named by a reply route and every NEW cursor, a reply route hijacked by
+  a reused mail id (same reader) is repointed at the note they now hold, and
+  the MeshCore instance re-keys the game rows it brought to its `mc:` ids,
+  merging a player's duplicate same-day WORDLE/BOOK rows and taking the
+  double count back out of the day's totals. Recorded in `bbs_meta`, so it
+  runs once.
+- `install-rpi.sh --reset-data` now checks the state directory itself (a
+  shared `bbs.db` or another instance's `<name>/observatory.db`) and the
+  installed `/etc/meshgarden` configs, so a custom `--config` path can no
+  longer bypass the guard and wipe a peer instance's state and backups.
+
 ## [1.11.1] - 2026-10-19
 
 ### Fixed

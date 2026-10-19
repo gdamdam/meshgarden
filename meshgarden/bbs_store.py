@@ -9,12 +9,14 @@ name resolution (temp, main, then attached schemas) finds `bbs.<table>`.
 Observatory tables (nodes, observations, ...) stay per-instance in `main`.
 """
 
+import json
 import re
 import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
 
+from meshgarden.booktrivia import book_key, puzzle_for
 from meshgarden.wordle import player_key
 
 BBS_SCHEMA_VERSION = 1
@@ -177,20 +179,22 @@ def _carry_sequence(conn: sqlite3.Connection, table: str) -> None:
     main_seq = conn.execute(
         "SELECT seq FROM main.sqlite_sequence WHERE name = ?", (table,)
     ).fetchone()
-    if main_seq is None:
+    if main_seq is not None:
+        _raise_sequence(conn, table, main_seq[0])
+
+
+def _raise_sequence(conn: sqlite3.Connection, table: str, floor: int) -> None:
+    """Make bbs's next AUTOINCREMENT id for `table` exceed `floor`."""
+    if floor <= 0:
         return
     bbs_seq = conn.execute(
         "SELECT seq FROM bbs.sqlite_sequence WHERE name = ?", (table,)
     ).fetchone()
     if bbs_seq is None:
         # sqlite_sequence has no unique key, so insert only when absent.
-        conn.execute(
-            "INSERT INTO bbs.sqlite_sequence(name, seq) VALUES (?, ?)", (table, main_seq[0])
-        )
-    elif bbs_seq[0] < main_seq[0]:
-        conn.execute(
-            "UPDATE bbs.sqlite_sequence SET seq = ? WHERE name = ?", (main_seq[0], table)
-        )
+        conn.execute("INSERT INTO bbs.sqlite_sequence(name, seq) VALUES (?, ?)", (table, floor))
+    elif bbs_seq[0] < floor:
+        conn.execute("UPDATE bbs.sqlite_sequence SET seq = ? WHERE name = ?", (floor, table))
 
 
 def _conflicts(conn: sqlite3.Connection, table: str, instance_id: str) -> bool:
@@ -240,6 +244,11 @@ def _rekey_players(conn: sqlite3.Connection, table: str, salt: str) -> None:
     key and is orphaned, as before. Done here, before any other instance
     shares the file, because a lookup-time fallback to the bare-id key would
     let a forged MeshCore id claim a Meshtastic player's same-day state.
+
+    When both keys already hold a row (a 1.11.0 split, where the player kept
+    playing under the new key), the two are merged: the solved row wins, else
+    the one with more guesses, and the dropped row's share of that day's
+    aggregates is taken back out so the player counts once.
     """
     ids = [
         row[0]
@@ -252,9 +261,63 @@ def _rekey_players(conn: sqlite3.Connection, table: str, salt: str) -> None:
     days = [row[0] for row in conn.execute(f"SELECT DISTINCT day FROM bbs.{table}")]
     for day in days:
         for node_id in ids:
+            old = player_key(node_id, day, salt)
+            new = player_key("mc:" + node_id, day, salt)
+            o, n = (
+                conn.execute(
+                    f"SELECT * FROM bbs.{table} WHERE player_key = ? AND day = ?", (k, day)
+                ).fetchone()
+                for k in (old, new)
+            )
+            if o is None:
+                continue
+            if n is None:
+                conn.execute(
+                    f"UPDATE bbs.{table} SET player_key = ? WHERE player_key = ? AND day = ?",
+                    (new, old, day),
+                )
+                continue
+            _merge_player_rows(conn, table, day, salt, o, n)
             conn.execute(
-                f"UPDATE bbs.{table} SET player_key = ? WHERE player_key = ? AND day = ?",
-                (player_key("mc:" + node_id, day, salt), player_key(node_id, day, salt), day),
+                f"DELETE FROM bbs.{table} WHERE player_key = ? AND day = ?", (old, day)
+            )
+
+
+def _merge_player_rows(
+    conn: sqlite3.Connection, table: str, day: str, salt: str, o: sqlite3.Row, n: sqlite3.Row
+) -> None:
+    """Fold old-key row `o` into new-key row `n` (same player, same day) and
+    undo the double count the duplicate put into the day's aggregates."""
+    o_guesses = o["guesses"] if table == "wordle_state" else 0
+    n_guesses = n["guesses"] if table == "wordle_state" else 0
+    keep_old = (o["solved"], o_guesses) > (n["solved"], n_guesses)
+    keep, drop = (o, n) if keep_old else (n, o)
+    if table == "wordle_state":
+        conn.execute(
+            "UPDATE bbs.wordle_state SET guesses = ?, solved = ?, updated_at = ? "
+            "WHERE player_key = ? AND day = ?",
+            (keep["guesses"], keep["solved"], max(o["updated_at"], n["updated_at"]),
+             n["player_key"], day),
+        )
+        # Each row was counted as a player; a solved one also as a solve.
+        conn.execute(
+            "UPDATE bbs.wordle_daily SET players = MAX(players - 1, 0), "
+            "solves = MAX(solves - ?, 0), "
+            "total_guesses_on_solve = MAX(total_guesses_on_solve - ?, 0) WHERE day = ?",
+            (drop["solved"], drop["guesses"] if drop["solved"] else 0, day),
+        )
+    else:
+        conn.execute(
+            "UPDATE bbs.book_state SET solved = ?, updated_at = ? "
+            "WHERE player_key = ? AND day = ?",
+            (keep["solved"], max(o["updated_at"], n["updated_at"]), n["player_key"], day),
+        )
+        if drop["solved"]:
+            # Both solved, so the day's book was credited twice.
+            conn.execute(
+                "UPDATE bbs.book_stats SET solves = MAX(solves - 1, 0) "
+                "WHERE book_key = ? AND day = ?",
+                (book_key(puzzle_for(day, salt)), day),
             )
 
 
@@ -310,3 +373,76 @@ def ensure_split(conn: sqlite3.Connection, transport: str, salt: str = "") -> No
                 for view in BBS_VIEWS:
                     conn.execute(f"DROP VIEW IF EXISTS main.{view}")
             conn.execute(f"DROP TABLE main.{table}")
+    with _immediate(conn):
+        _repair_1_11_0_split(conn, transport, salt, instance_id, moved_now=set(pending))
+
+
+def _meta_get(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM bbs.bbs_meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def _meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute("INSERT OR REPLACE INTO bbs.bbs_meta(key, value) VALUES (?, ?)", (key, value))
+
+
+def _repair_1_11_0_split(
+    conn: sqlite3.Connection, transport: str, salt: str, instance_id: str, moved_now: set[str]
+) -> None:
+    """One-time repairs for a bbs.db split by 1.11.0, which neither carried
+    an emptied table's id sequence nor re-keyed MeshCore game state. A file
+    split by this version needs neither, and records them as done."""
+    if _meta_get(conn, "repair:sequences") is None:
+        _repair_sequences(conn)
+        _meta_set(conn, "repair:sequences", instance_id)
+    rekey_mark = f"repair:rekey:{instance_id}"
+    if transport != "meshcore" or _meta_get(conn, rekey_mark) is not None:
+        return
+    for table in PLAYER_KEY_TABLES:
+        # Only game rows this instance brought itself carry its bare-id keys;
+        # any other bare-id row belongs to a Meshtastic player and must not be
+        # handed to a MeshCore id that happens to match. Tables moved in this
+        # call were re-keyed during the copy.
+        if table not in moved_now and _meta_get(conn, f"moved:{table}") == instance_id:
+            _rekey_players(conn, table, salt)
+    _meta_set(conn, rekey_mark, "done")
+
+
+def _repair_sequences(conn: sqlite3.Connection) -> None:
+    """Lift sequences above every id still referenced, and repoint reply
+    routes that a reused mail id hijacked."""
+    # A reused id with the same recipient makes that reader's REPLY #id
+    # resolve to the old sender: repoint it at the note they now hold. A
+    # reused id to a different recipient leaves the old route alone -- it is
+    # still that reader's genuine conversation (lookups match the recipient).
+    conn.execute(
+        "UPDATE bbs.mail_reply_routes SET sender_node_id = "
+        "(SELECT m.sender_node_id FROM bbs.mail AS m WHERE m.id = mail_reply_routes.mail_id) "
+        "WHERE EXISTS (SELECT 1 FROM bbs.mail AS m WHERE m.id = mail_reply_routes.mail_id "
+        "AND m.recipient_node_id = mail_reply_routes.recipient_node_id "
+        "AND m.sender_node_id <> mail_reply_routes.sender_node_id)"
+    )
+    floors = {
+        "mail": conn.execute(
+            "SELECT COALESCE(MAX(mail_id), 0) FROM bbs.mail_reply_routes"
+        ).fetchone()[0],
+        "guestbook": 0,
+        "news": 0,
+    }
+    # NEW cursors hold per-reader high-water ids; ids at or below them would
+    # never be announced as new.
+    for (snapshot,) in conn.execute(
+        "SELECT snapshot FROM bbs.update_cursors UNION ALL SELECT snapshot FROM bbs.update_pending"
+    ):
+        try:
+            marks = json.loads(snapshot)
+        except ValueError:
+            continue
+        if not isinstance(marks, dict):
+            continue
+        for key, table in (("guestbook", "guestbook"), ("boards", "guestbook"), ("news", "news")):
+            value = marks.get(key)
+            if isinstance(value, int):
+                floors[table] = max(floors[table], value)
+    for table, floor in floors.items():
+        _raise_sequence(conn, table, floor)

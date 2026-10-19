@@ -558,15 +558,25 @@ if [ "$RESET_DATA" -eq 1 ]; then
             exit 1
             ;;
     esac
-    # Another instance's config means $STATE_DIR also holds that instance's
-    # state and backups (<name>/) and the shared bbs.db, while its daemon may
-    # still be running: the removal loop below would wipe all of it.
-    for other in "$CONFIG_DIR"/*.toml; do
-        [ -e "$other" ] || continue
-        [ "$other" = "$CONFIG_PATH" ] && continue
-        err "--reset-data refused: instance config $other shares $STATE_DIR (its state, its backups and the shared bbs.db). Stop and remove that instance first, or reset files by hand."
-        exit 1
+    # A shared garden puts the shared bbs.db and each other instance's state
+    # and backups (<name>/) inside $STATE_DIR, possibly under a still-running
+    # daemon: the removal loop below would wipe all of it. Check the state
+    # itself, not only config files -- a custom --config lives elsewhere and
+    # would miss the installed instance configs.
+    shared_state=()
+    for path in "$STATE_DIR"/bbs.db "$STATE_DIR"/*/observatory.db; do
+        [ -e "$path" ] && shared_state+=("$path")
     done
+    for other in "$CONFIG_DIR"/*.toml /etc/meshgarden/*.toml; do
+        [ -e "$other" ] || continue
+        # -ef: the same file reached through another spelling of the path.
+        { [ "$other" = "$CONFIG_PATH" ] || [ "$other" -ef "$CONFIG_PATH" ]; } && continue
+        shared_state+=("$other")
+    done
+    if [ "${#shared_state[@]}" -gt 0 ]; then
+        err "--reset-data refused: $STATE_DIR is shared with another instance or holds the shared BBS (${shared_state[*]}). Stop and remove the other instance(s) first, or reset files by hand."
+        exit 1
+    fi
     log "--reset-data: will wipe $STATE_DIR (database + daemon state), keeping backups/; config is never touched"
     if [ "$DRY_RUN" -eq 0 ] && [ "$ASSUME_YES" -ne 1 ]; then
         printf 'This will permanently delete the database and all other daemon state under %s (keeping %s/backups; %s is never touched). Type "yes" to continue: ' \

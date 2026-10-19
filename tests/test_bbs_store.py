@@ -236,6 +236,80 @@ def test_meshcore_game_state_rekeyed_to_qualified_id(paths):
         assert [r[0] for r in conn.execute(f"SELECT player_key FROM {table}")] == [new]
 
 
+def _as_split_by_1_11_0(conn):
+    """Strip what 1.11.0 never wrote: the repair markers and the carried
+    mail sequence."""
+    conn.execute("DELETE FROM bbs.bbs_meta WHERE key LIKE 'repair:%'")
+    conn.execute("DELETE FROM bbs.sqlite_sequence WHERE name = 'mail'")
+    conn.commit()
+
+
+def test_1_11_0_split_repairs_mail_sequence_and_hijacked_route(paths):
+    main_path, bbs_path = paths
+    conn = _split(main_path, bbs_path)
+    conn.execute(
+        "INSERT INTO mail_reply_routes(mail_id, sender_node_id, recipient_node_id, expires_at) "
+        "VALUES (1, '!0000aaaa', '!0000bbbb', 9999999999)"
+    )
+    _as_split_by_1_11_0(conn)
+    # 1.11.0 handed the collected note's id out again, same reader.
+    conn.execute(
+        "INSERT INTO mail(id, created_at, sender_node_id, recipient_node_id, message, "
+        "message_hash) VALUES (1, 2, '!0000cccc', '!0000bbbb', 'n', 'h')"
+    )
+    conn.commit()
+    conn.close()
+    conn = _split(main_path, bbs_path)
+    route = conn.execute("SELECT sender_node_id FROM mail_reply_routes WHERE mail_id = 1")
+    assert route.fetchone()[0] == "!0000cccc"
+    conn.execute(
+        "INSERT INTO mail(created_at, sender_node_id, recipient_node_id, message, message_hash) "
+        "VALUES (3, '!0000dddd', '!0000bbbb', 'n', 'h')"
+    )
+    assert conn.execute("SELECT max(id) FROM mail").fetchone()[0] == 2
+
+
+def test_1_11_0_split_merges_duplicate_meshcore_wordle_player(paths):
+    from meshgarden.wordle import player_key
+
+    main_path, bbs_path = paths
+    conn = connect(main_path, bbs_path=bbs_path, transport="meshcore")
+    migrate(conn, transport="meshcore", salt="s")
+    conn.execute(
+        "INSERT INTO nodes(node_id, observed_first_seen, observed_last_seen) "
+        "VALUES ('!e4d495e4', 1, 1)"
+    )
+    instance = conn.execute(
+        "SELECT value FROM daemon_state WHERE key = 'instance_id'"
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT OR REPLACE INTO bbs.bbs_meta(key, value) VALUES ('moved:wordle_state', ?)",
+        (instance,),
+    )
+    _as_split_by_1_11_0(conn)
+    day = "2026-10-19"
+    old, new = player_key("!e4d495e4", day, "s"), player_key("mc:!e4d495e4", day, "s")
+    # Solved before the upgrade in 2, again after it in 4: two players, two solves.
+    conn.executemany(
+        "INSERT INTO wordle_state(player_key, day, guesses, solved, updated_at) "
+        "VALUES (?, ?, ?, 1, ?)",
+        [(old, day, 2, 1), (new, day, 4, 2)],
+    )
+    conn.execute(
+        "INSERT INTO wordle_daily(day, players, solves, total_guesses_on_solve) "
+        "VALUES (?, 2, 2, 6)",
+        (day,),
+    )
+    conn.commit()
+    conn.close()
+    conn = connect(main_path, bbs_path=bbs_path, transport="meshcore")
+    migrate(conn, transport="meshcore", salt="s")
+    rows = conn.execute("SELECT player_key, guesses FROM wordle_state").fetchall()
+    assert [tuple(r) for r in rows] == [(new, 4)]
+    daily = conn.execute("SELECT players, solves, total_guesses_on_solve FROM wordle_daily")
+    assert tuple(daily.fetchone()) == (1, 1, 4)
+
+
 def test_run_reports_split_conflict_without_traceback(monkeypatch, capsys):
     from meshgarden import main
 

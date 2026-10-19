@@ -850,6 +850,39 @@ def test_install_dry_run_reset_data_refuses_when_another_instance_exists():
         assert "would run: rm" not in result.stdout
 
 
+@pytest.mark.parametrize("peer_state", ["bbs.db", os.path.join("mt", "observatory.db")])
+def test_install_dry_run_reset_data_refuses_shared_state_with_custom_config(peer_state):
+    """A --config outside the installed config dir must not dodge the guard:
+    the shared bbs.db or another instance's state in STATE_DIR is enough."""
+    with tempfile.TemporaryDirectory() as state_dir, tempfile.TemporaryDirectory() as cfg_dir:
+        path = os.path.join(state_dir, peer_state)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("x")
+        env = _dry_run_env()
+        env["MESHGARDEN_INSTALL_STATE_DIR"] = state_dir
+        result = subprocess.run(
+            [
+                INSTALL_SCRIPT,
+                "--dry-run",
+                "--skip-apt",
+                "--skip-uv-install",
+                "--no-start",
+                "--no-enable",
+                "--config",
+                os.path.join(cfg_dir, "custom.toml"),
+                "--reset-data",
+                "--yes",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert peer_state in result.stdout + result.stderr
+        assert "would run: rm" not in result.stdout
+
+
 def test_install_dry_run_without_reset_data_plans_no_state_removal():
     result = subprocess.run(
         [
