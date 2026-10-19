@@ -1309,9 +1309,18 @@ def test_doctor_peer_same_instance_warns(tmp_path):
     _instance_id(conn)
     conn.close()
     check = ops._check_peer_observatory(_shared_cfg(tmp_path, peer=str(tmp_path / "o.db")))
-    assert check.ok is False and check.detail.startswith("WARN")
+    assert check.ok is False and "same instance_id" in check.detail
 
 
 def test_doctor_single_file_has_no_bbs_checks(tmp_path):
     names = [c.name for c in ops.doctor(_cfg(tmp_path), now=1_700_000_000)]
     assert not any(n.startswith("bbs_") or n == "peer_observatory" for n in names)
+
+
+def test_doctor_peer_missing_is_ok_corrupt_is_not(tmp_path):
+    _shared_db(tmp_path).close()
+    missing = ops._check_peer_observatory(_shared_cfg(tmp_path, peer=str(tmp_path / "peer.db")))
+    assert missing.ok is True and "not created yet" in missing.detail
+    (tmp_path / "peer.db").write_bytes(b"not a sqlite database" * 50)
+    corrupt = ops._check_peer_observatory(_shared_cfg(tmp_path, peer=str(tmp_path / "peer.db")))
+    assert corrupt.ok is False and "unreadable" in corrupt.detail

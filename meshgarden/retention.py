@@ -529,11 +529,13 @@ class Retention:
                 # The attached file is backed up from its own connection:
                 # Connection.backup() on the main one would copy only main.
                 src = source or sqlite3.connect(self._bbs_path)
-                target = sqlite3.connect(tmp_dest)
                 try:
-                    src.backup(target)  # consistent while WAL is active
+                    target = sqlite3.connect(tmp_dest)
+                    try:
+                        src.backup(target)  # consistent while WAL is active
+                    finally:
+                        target.close()  # explicit: os.replace must not race an open handle
                 finally:
-                    target.close()  # explicit: os.replace must not race an open handle
                     if source is None:
                         src.close()
                 os.chmod(tmp_dest, 0o600)

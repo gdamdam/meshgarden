@@ -758,7 +758,10 @@ def _check_peer_observatory(cfg: Config) -> Check:
     if not peer:
         return Check("peer_observatory", True, "not configured")
     if not os.path.exists(peer):
-        return Check("peer_observatory", False, f"{peer}: not found")
+        # The other daemon may simply not have started yet.
+        return Check(
+            "peer_observatory", True, f"{peer}: peer not created yet (other daemon not started)"
+        )
 
     def instance_id(path: str) -> str | None:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -777,7 +780,10 @@ def _check_peer_observatory(cfg: Config) -> Check:
         return Check("peer_observatory", False, f"{peer}: unreadable: {exc}")
     if theirs is not None and theirs == ours:
         return Check(
-            "peer_observatory", False, f"WARN: {peer} has this instance's own instance_id"
+            "peer_observatory",
+            False,
+            f"{peer} is this instance's own database (same instance_id): "
+            "database.peer_path must point at the other mesh's file",
         )
     return Check("peer_observatory", True, f"{peer}: readable")
 
