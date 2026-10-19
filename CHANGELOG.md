@@ -9,6 +9,14 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-10-19
+
+### Fixed
+
+- Dashboard navigation: the page tabs no longer run together ("Right nowHealthTraffic…"). Each is a
+  padded, spaced tab, the current one is highlighted and marked `aria-current="page"`, and the row
+  wraps on narrow screens.
+
 ## [1.13.0] - 2026-10-19
 
 ### Added

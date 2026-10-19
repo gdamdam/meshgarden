@@ -52,8 +52,15 @@ a { color: var(--link); }
 header.top { border-bottom: 1px solid var(--border); padding: 10px 16px;
   display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
 header.top .title { font-weight: 600; margin-right: 8px; }
-nav.top a { text-decoration: none; color: var(--muted); padding: 2px 0; }
-nav.top a.active, nav.top a:hover { color: var(--fg); border-bottom: 2px solid var(--accent); }
+/* Tabs: each link padded and spaced so the labels never run together;
+   the row wraps on narrow screens instead of scrolling sideways. */
+nav.top { display: flex; flex-wrap: wrap; gap: 4px 2px; }
+nav.top a { text-decoration: none; color: var(--muted); padding: 4px 10px;
+  border-radius: 6px; border-bottom: 2px solid transparent; white-space: nowrap; }
+nav.top a:hover { color: var(--fg); background: var(--card); }
+nav.top a.active { color: var(--fg); font-weight: 600; background: var(--card);
+  border-bottom-color: var(--accent); }
+nav.top a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 main { padding: 16px; max-width: 960px; margin: 0 auto; }
 h1 { font-size: 1.25rem; margin: 0 0 12px; }
 h2 { font-size: 1.05rem; margin: 20px 0 8px; }
@@ -279,7 +286,7 @@ def svg_heat_strip(
 def layout(*, title: str, active: str, body: str) -> bytes:
     nav_links = []
     for href, label in _NAV_ITEMS:
-        cls = ' class="active"' if href == active else ""
+        cls = ' class="active" aria-current="page"' if href == active else ""
         nav_links.append(f'<a href="{href}"{cls}>{label}</a>')
     nav = "".join(nav_links)
     html_doc = f"""<!doctype html>
@@ -293,7 +300,7 @@ def layout(*, title: str, active: str, body: str) -> bytes:
 <body>
 <header class="top">
   <span class="title">Meshgarden</span>
-  <nav class="top">{nav}</nav>
+  <nav class="top" aria-label="Dashboard pages">{nav}</nav>
 </header>
 <main>
 {body}

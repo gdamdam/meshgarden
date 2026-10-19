@@ -1845,3 +1845,13 @@ def test_both_has_no_duplicate_ids(tmp_path):
         assert status == 200
         ids = re.findall(r'\sid="([^"]*)"', text)
         assert len(ids) == len(set(ids))
+
+
+def test_nav_marks_the_current_tab_and_spaces_the_tabs():
+    from meshgarden.web_templates import _NAV_ITEMS, layout
+
+    href = _NAV_ITEMS[1][0]
+    page = layout(title="t", active=href, body="").decode()
+    assert f'<a href="{href}" class="active" aria-current="page">' in page
+    assert page.count('aria-current="page"') == 1
+    assert "nav.top { display: flex; flex-wrap: wrap;" in page
