@@ -13,12 +13,15 @@ import os
 import sqlite3
 
 from meshgarden import bbs_ids, bbs_store
+from meshgarden.accounts import SCHEMA_SQL as IDENTITY_SQL
 from meshgarden.community import NEWS_SQL
+from meshgarden.federation import FEDERATION_SQL
+from meshgarden.feeds import NEWS_IMPORTS_SQL
 from meshgarden.mail import MAIL_ALIASES_SQL, REPLY_ROUTES_SQL
 from meshgarden.updates import SCHEMA_SQL as UPDATES_SQL
 from meshgarden.usefulness import SCHEMA_SQL as USEFULNESS_SQL
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 23
 
 MIGRATION_1_SQL = """
 CREATE TABLE nodes (
@@ -396,6 +399,26 @@ CREATE TABLE dm_positions (
 CREATE INDEX idx_dm_positions_node_time ON dm_positions(node_id, server_time);
 """
 
+# Per-reader unread cursors for topic boards (BOARDS NEW / READ <board> NEW).
+# Pending rows are keyed by the request packet id and committed only on ACK.
+BOARD_CURSORS_SQL = """
+CREATE TABLE board_cursors (
+  node_id      TEXT NOT NULL,
+  board        TEXT NOT NULL,
+  last_read_id INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY(node_id, board)
+);
+CREATE TABLE board_cursor_pending (
+  node_id    TEXT NOT NULL,
+  packet_id  INTEGER NOT NULL,
+  board      TEXT NOT NULL,
+  high_id    INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(node_id, packet_id, board)
+);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, MIGRATION_1_SQL),
     (2, MIGRATION_2_SQL),
@@ -416,6 +439,10 @@ MIGRATIONS: list[tuple[int, str]] = [
     (17, MIGRATION_17_SQL),
     (18, MIGRATION_18_SQL),
     (19, MIGRATION_19_SQL),
+    (20, NEWS_IMPORTS_SQL),
+    (21, BOARD_CURSORS_SQL),
+    (22, IDENTITY_SQL),
+    (23, FEDERATION_SQL),
 ]
 
 

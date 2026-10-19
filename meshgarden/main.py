@@ -59,19 +59,26 @@ from zoneinfo import ZoneInfo
 
 from meshgarden import (
     __version__,
+    accounts,
     advert_control,
     bbs_ids,
     bbs_store,
+    board_unread,
     booktrivia,
     cli_ops,
     community,
     digest,
     exchange_log,
+    federation,
+    feeds,
+    health_report,
     moderation,
     modules,
     ops,
     positions,
+    setup_wizard,
     updates,
+    upgrade,
     usefulness,
     watchdog,
     web,
@@ -141,6 +148,8 @@ from meshgarden.config import (
 from meshgarden.contacts import select_contacts_to_prune
 from meshgarden.database import connect, get_daemon_state, migrate, set_daemon_state
 from meshgarden.diagnostics import route_reply
+from meshgarden.federation import FederationBatch, FederationPoller, FederationServer
+from meshgarden.feeds import FeedBatch, FeedPoller
 from meshgarden.fortune import (
     haiku_text,
     iching_text,
@@ -789,6 +798,8 @@ class Daemon:
             | _MeshCoreContact
             | _KnockCooldownRelease
             | WeatherBatch
+            | FeedBatch
+            | FederationBatch
             | _WeatherDropped
         ] = queue.Queue(maxsize=_INGEST_QUEUE_MAXSIZE)
 
@@ -859,6 +870,12 @@ class Daemon:
         self._weather_poller: WeatherPoller | None = None
         self._weather_thread: threading.Thread | None = None
         self._start_weather_poller = weather_poller
+        self._module_services: list = []
+        self._feed_poller: FeedPoller | None = None
+        self._feed_thread: threading.Thread | None = None
+        self._federation_server: FederationServer | None = None
+        self._federation_poller: FederationPoller | None = None
+        self._federation_thread: threading.Thread | None = None
         self._weather_unresolved_logged = False
         # Mixed into each weather packet id so two retries of one identical
         # line in the same second never collide on processed_requests.
@@ -1096,6 +1113,22 @@ class Daemon:
                 stop_event=self._stop_event,
             )
             self._weather_thread = self._weather_poller.start()
+        # Optional outbound HTTP, each off unless enabled in config.
+        for service in self._modules.services():
+            try:
+                service.start()
+            except Exception:
+                # A module's provider must not keep the garden off the air.
+                log.exception("command module service failed to start")
+                continue
+            self._module_services.append(service)
+        if self.cfg.feeds.enabled:
+            self._feed_poller = FeedPoller(
+                self.cfg.feeds, emit=self._ingest.put_nowait, stop_event=self._stop_event
+            )
+            self._feed_thread = self._feed_poller.start()
+        if self.cfg.federation.enabled:
+            self._start_federation()
 
         # Sender is constructed here (not in __init__) because it needs both
         # worker connections' RequestLogs, which only exist once each worker
@@ -1109,7 +1142,7 @@ class Daemon:
             tx_request_log=self._tx_request_log,
             metrics=self._metrics,
             expected_node_id=self.cfg.radio.expected_node_id,
-            is_blocked=lambda node_id: is_blocked(self._tx_conn, self._bbs_id(node_id)),
+            is_blocked=lambda node_id: self._is_blocked(self._tx_conn, node_id),
             clock=self._clock.monotonic,
         )
         # The transport reports a delivery outcome (ack/fail) via this
@@ -1152,6 +1185,14 @@ class Daemon:
             log.warning("ingest queue full at shutdown; relying on stop event")
         if self._weather_thread is not None:
             self._weather_thread.join(timeout=5)
+        if self._feed_thread is not None:
+            self._feed_thread.join(timeout=5)
+        if self._federation_thread is not None:
+            self._federation_thread.join(timeout=5)
+        if self._federation_server is not None:
+            self._federation_server.stop()
+        for service in self._module_services:
+            service.stop()
         if self._db_thread is not None:
             self._db_thread.join(timeout=10)
         if self._tx_thread is not None:
@@ -1728,6 +1769,10 @@ class Daemon:
                         self._process_knock_cooldown_release(obs)
                     elif isinstance(obs, WeatherBatch):
                         self._process_weather_batch(obs)
+                    elif isinstance(obs, FeedBatch):
+                        self._process_feed_batch(obs)
+                    elif isinstance(obs, FederationBatch):
+                        self._process_federation_batch(obs)
                     elif isinstance(obs, _WeatherDropped) and self._weather_ledger is not None:
                         self._weather_ledger.mark(obs.product_key, "dropped", int(time.time()))
                 except Exception:
@@ -2002,8 +2047,8 @@ class Daemon:
         )
         if parsed.command == Command.UNKNOWN:
             # Unknown text receives no response.
-            if parsed.rejection_reason is None and not is_blocked(
-                self._db_conn, self._bbs_id(sender_node_id)
+            if parsed.rejection_reason is None and not self._is_blocked(
+                self._db_conn, sender_node_id
             ):
                 usefulness.counter(self._db_conn, "UNKNOWN_REQUESTS", 1, received_at)
             exchange_log.log_rejection(
@@ -2025,7 +2070,7 @@ class Daemon:
         packet_id = obs.packet_id
         if packet_id is None:
             return False
-        if is_blocked(self._db_conn, self._bbs_id(sender_node_id)):
+        if self._is_blocked(self._db_conn, sender_node_id):
             exchange_log.log_rejection(
                 sender_node_id, "blocked", command=parsed.command.value,
                 now=now, packet_id=packet_id,
@@ -2210,7 +2255,8 @@ class Daemon:
             )
             sent = self._reserve_and_send(sender_node_id, obs, now, body)
             if sent:
-                updates.remember(self._db_conn, bbs_sender, obs.packet_id, snapshot, now)
+                updates.remember(self._db_conn, self._bbs_identity(sender_node_id),
+                                 obs.packet_id, snapshot, now)
             self._metrics.commands_total.labels("NEW", "accepted" if sent else "queue_full").inc()
             return
         if parsed.command == Command.CHECK:
@@ -2303,6 +2349,10 @@ class Daemon:
 
         if parsed.command == Command.READ:
             self._handle_read(sender_node_id, parsed.argument, obs, now)
+            return
+
+        if parsed.command == Command.BOARDS and parsed.argument == "NEW":
+            self._handle_boards_new(sender_node_id, obs, now)
             return
 
         if parsed.command == Command.MAIL:
@@ -2629,6 +2679,50 @@ class Daemon:
     def _alert_channel_idx(self) -> int | None:
         return getattr(self._transport, "alert_channel_idx", None)
 
+    def _start_federation(self) -> None:
+        """Server (read-only, own connections) and poller (HTTP only; hands
+        batches to the DB worker). Neither touches the transport."""
+        fed = self.cfg.federation
+        federation.purge_removed_peers(self.conn, [p.origin_id for p in fed.peers])
+        cfg = self.cfg
+        self._federation_server = FederationServer(
+            fed,
+            lambda: connect(
+                cfg.database.path, read_only=True, bbs_path=cfg.database.resolved_bbs_path,
+                transport=cfg.radio.transport,
+            ),
+            federation.author_key(fed.origin_id, cfg.service.fortune_salt),
+        )
+        self._federation_server.start()
+        log.info("federation: serving origin %s on %s:%d", fed.origin_id,
+                 fed.listen_host, self._federation_server.port)
+        if fed.peers:
+            self._federation_poller = FederationPoller(
+                fed, emit=self._ingest.put_nowait, stop_event=self._stop_event,
+                cursors=federation.load_cursors(self.conn),
+            )
+            self._federation_thread = self._federation_poller.start()
+
+    def _process_federation_batch(self, batch: FederationBatch) -> None:
+        """DB worker thread. Commits posts + cursor, then acknowledges the poller."""
+        federation.process_batch(
+            self._db_conn, batch, self.cfg.federation,
+            max_chars=self.cfg.service.max_guestbook_chars, banned_terms=self._banned_terms,
+        )
+
+    def _process_feed_batch(self, batch: FeedBatch) -> None:
+        """DB worker thread. Feed failures only log; NEWS keeps what it has."""
+        if not batch.ok:
+            return
+        added = feeds.import_items(
+            self._db_conn, batch.items, now=int(time.time()),
+            max_stored_items=self.cfg.feeds.max_stored_items,
+            item_expiry_days=self.cfg.feeds.item_expiry_days,
+        )
+        if added or batch.skipped:
+            log.info("feeds: %s imported %d item(s), skipped %d malformed",
+                     batch.feed_url, added, batch.skipped)
+
     def _process_weather_batch(self, batch: WeatherBatch) -> None:
         """DB worker thread. Turns the ledger's plans into ordinary
         ReplyJobs: the garden's own node id as request_sender (there is no
@@ -2808,6 +2902,7 @@ class Daemon:
                 self.cfg.service.lab_unlock_word and self._lab.is_unlocked(bbs_sender)
             ),
             conn=self._db_conn,
+            identity=self._bbs_identity(sender_node_id),
         )
         body = truncate_utf8(self._modules.run(module, request), self._transport.max_text_bytes)
         sent = self._reserve_and_send(sender_node_id, obs, now, body)
@@ -3551,13 +3646,36 @@ class Daemon:
     def _peer_transport_name(self) -> str:
         return "meshtastic" if self.cfg.radio.transport == "meshcore" else "meshcore"
 
-    def _bbs_id(self, node_id: str) -> str:
+    def _bbs_identity(self, node_id: str) -> str:
         """The form of a sender/recipient id stored in the BBS tables.
         Only a shared bbs.db holds both meshes' rows, so a single-file
         install keeps bare ids (and needs no migration of its rows)."""
         if self.cfg.database.resolved_bbs_path is None:
             return node_id
         return bbs_ids.qualify(node_id, self.cfg.radio.transport)
+
+    def _bbs_id(self, node_id: str, conn: sqlite3.Connection | None = None) -> str:
+        """`_bbs_identity`, mapped onto its linked account when identity
+        linking is on: every BBS row (mail, prefs, alias, cursors, LAB,
+        games) is keyed by the account, so both radios share it. `conn`
+        defaults to the DB worker's; other threads pass their own."""
+        stored = self._bbs_identity(node_id)
+        if not self.cfg.service.identity_linking:
+            return stored
+        return accounts.canonical(conn if conn is not None else self._db_conn, stored)
+
+    def _account_id(self, stored: str) -> str:
+        """A stored radio identity's linked account (itself when unlinked)."""
+        if not self.cfg.service.identity_linking:
+            return stored
+        return accounts.canonical(self._db_conn, stored)
+
+    def _is_blocked(self, conn: sqlite3.Connection, node_id: str) -> bool:
+        """A block on either linked identity blocks both radios."""
+        stored = self._bbs_identity(node_id)
+        if not self.cfg.service.identity_linking:
+            return is_blocked(conn, stored)
+        return accounts.is_blocked_any(conn, stored)
 
     def _bbs_local(self, stored: str) -> str | None:
         """This mesh's bare id for a stored BBS id, or None when it belongs
@@ -3854,6 +3972,15 @@ class Daemon:
         self._limiter.commit_command(sender_node_id)
         self._metrics.commands_total.labels(Command.POST.value, "accepted").inc()
 
+    def _handle_boards_new(self, sender_node_id: str, obs: IncomingPacket, now: int) -> None:
+        """BOARDS NEW: unread counts per board. Read-only; nothing advances."""
+        counts = board_unread.unread_counts(self._db_conn, self._bbs_id(sender_node_id), now)
+        body = board_unread.boards_new_text(counts, self._transport.max_text_bytes)
+        sent = self._reserve_and_send(sender_node_id, obs, now, body)
+        self._metrics.commands_total.labels(
+            Command.BOARDS.value, "accepted" if sent else "queue_full"
+        ).inc()
+
     def _handle_read(
         self, sender_node_id: str, raw_argument: str, obs: IncomingPacket, now: int
     ) -> None:
@@ -3873,7 +4000,12 @@ class Daemon:
             return
         topic_raw = parts[0]
         page_raw = parts[1].strip() if len(parts) > 1 else ""
+        unread_only = page_raw.upper() == "NEW"
         existing_topics = self._guestbook.distinct_topics_in_use()
+        fed_boards = (
+            frozenset(self.cfg.federation.boards) if self.cfg.federation.enabled else frozenset()
+        )
+        existing_topics = existing_topics | fed_boards
         topic_or_reject = validate_topic(
             topic_raw,
             max_topics_in_use=len(existing_topics),
@@ -3894,6 +4026,20 @@ class Daemon:
         topic = topic_or_reject
         per_page = self.cfg.service.guestbook_entries_returned
         max_bytes = self._transport.max_text_bytes
+        if unread_only:
+            bbs_sender = self._bbs_id(sender_node_id)
+            # Settle first so a request acked since the last maintenance tick
+            # is not re-served.
+            self._resolve_pending_mail_deliveries(now)
+            body, high = board_unread.read_new(self._db_conn, bbs_sender, topic, now, max_bytes)
+            sent = self._reserve_and_send(sender_node_id, obs, now, body)
+            if sent and high is not None:
+                board_unread.remember(self._db_conn, self._bbs_identity(sender_node_id),
+                                      obs.packet_id, topic, high, now)
+            self._metrics.commands_total.labels(
+                Command.READ.value, "accepted" if sent else "queue_full"
+            ).inc()
+            return
         # isascii() guard: some non-ASCII digits (e.g. "²") satisfy
         # isdigit() but raise ValueError from int().
         page = (
@@ -3903,10 +4049,16 @@ class Daemon:
         )
         total_visible = self._guestbook.visible_count(topic=topic)
         entries = self._guestbook.page_visible(page, per_page, topic=topic)
+        # Federated posts ride after the local ones on page 1 only; with
+        # federation off fed_rows is empty and the reply is unchanged.
+        fed_rows = (
+            federation.visible_posts(self._db_conn, topic, per_page)
+            if topic in fed_boards and page <= 1 else []
+        )
         if entries:
             body = format_board(
                 entries,
-                max_bytes,
+                max_bytes - federation.reserve_bytes(fed_rows, max_bytes),
                 topic=topic,
                 page=page,
                 total_visible=total_visible,
@@ -3922,6 +4074,7 @@ class Daemon:
             body = format_board([], max_bytes, topic=topic, page=page, total_visible=total_visible)
         else:
             body = format_board_no_more_entries(topic, total_visible)
+        body = federation.append_federated(truncate_utf8(body, max_bytes), fed_rows, max_bytes)
         body = truncate_utf8(body, max_bytes)
         sent = self._reserve_and_send(sender_node_id, obs, now, body)
         outcome = "accepted" if sent else "queue_full"
@@ -3996,7 +4149,14 @@ class Daemon:
         state transition is somehow missed."""
         updates.settle(self._db_conn, now,
                        self.cfg.service.ack_timeout_seconds + self.cfg.service.reply_ttl_seconds,
-                       local_id=self._bbs_local)
+                       local_id=self._bbs_local, cursor_id=self._account_id)
+        board_unread.settle(
+            self._db_conn, now,
+            self.cfg.service.ack_timeout_seconds + self.cfg.service.reply_ttl_seconds,
+            local_id=self._bbs_local, cursor_id=self._account_id,
+        )
+        if self.cfg.service.identity_linking:
+            accounts.prune(self._db_conn, now)
         if not self._mail_delivery_pending:
             return
         max_age = self.cfg.service.ack_timeout_seconds + self.cfg.service.reply_ttl_seconds
@@ -4145,6 +4305,9 @@ class Daemon:
                 # Qualified with the PEER's mesh: the bare id was found in
                 # the peer's node table, not this one's.
                 recipient = bbs_ids.qualify(peer_node_id, self._peer_transport_name())
+        if self.cfg.service.identity_linking:
+            # Mail to either radio of a linked account lands in its one inbox.
+            recipient = accounts.canonical(self._db_conn, recipient)
 
         try:
             normalized = self._guestbook.validate(message_raw, inbound_payload_len=obs.payload_len)
@@ -4546,6 +4709,8 @@ class Daemon:
         # own UTC `today` above) matches the convention build_digest/
         # write_digest_file already use for a digest's `day`.
         digest.prune_digests(self.cfg, today=local_day(now, self.cfg.service.timezone))
+        # Opt-in ([health] enabled): once per local day, never touches the radio.
+        health_report.run_scheduled(self._db_conn, self.cfg, now)
 
         if self._retention.due_for_backup(now):
             self._retention.backup(now)
@@ -5014,7 +5179,41 @@ def cmd_guestbook_delete(cfg: Config, entry_id: int, *, topic: str | None = None
         if not Guestbook(conn, cfg.service).delete(entry_id):
             print(f"guestbook entry not found: {entry_id}", file=sys.stderr)
             return 3
+        if topic is not None:
+            # Lets federation peers drop their copy; harmless when it is off.
+            federation.record_deletion(conn, entry_id, int(time.time()))
         print(f"deleted: {entry_id}")
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_federation(cfg: Config, args) -> int:
+    """Local-only: status of federated boards, or hide/unhide a peer's post
+    (`<origin>:<id>`). A local hide always wins over later remote updates."""
+    if not os.path.isfile(cfg.database.path):
+        print("database not found; start the daemon first", file=sys.stderr)
+        return 1
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+                   transport=cfg.radio.transport)
+    try:
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
+        fed = cfg.federation
+        if args.federation_command == "status":
+            print(json.dumps({
+                "enabled": fed.enabled, "origin": fed.origin_id, "boards": list(fed.boards),
+                "peers": federation.status_rows(conn, fed),
+            }, indent=2))
+            return 0
+        ref = federation.parse_ref(args.ref)
+        if ref is None:
+            print("error: expected <origin>:<id>", file=sys.stderr)
+            return 2
+        hide = args.federation_command == "hide"
+        if not federation.set_local_hidden(conn, ref[0], ref[1], hide):
+            print(f"federated post not found: {args.ref}", file=sys.stderr)
+            return 3
+        print(f"{'hidden' if hide else 'unhidden'}: {args.ref}")
         return 0
     finally:
         conn.close()
@@ -5060,6 +5259,50 @@ def cmd_unblock(cfg: Config, node_id: str) -> int:
             print(f"not blocked: {_cli_bbs_node_label(conn, node_id)}", file=sys.stderr)
             return 3
         print(f"unblocked: {_cli_bbs_node_label(conn, node_id)}")
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_identity(cfg: Config, action: str, node_id: str) -> int:
+    """Operator view and recovery for linked identities. Shows only the
+    linked pair and the audit trail of the one account asked about: there
+    is deliberately no listing of every link."""
+    if cfg.database.resolved_bbs_path is None:
+        print("identity linking needs database.bbs_path (a shared bbs.db)", file=sys.stderr)
+        return 2
+    parsed = cli_ops.bbs_node_argument(cfg, node_id)
+    if parsed is None:
+        print(f"invalid node id: {node_id!r}", file=sys.stderr)
+        return 2
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
+    try:
+        migrate(conn, transport=cfg.radio.transport, salt=cfg.service.fortune_salt)
+        if action == "unlink":
+            now = int(time.time())
+            left = accounts.unlink(
+                conn, parsed, now, salt=cfg.service.fortune_salt,
+                today=local_day(now, cfg.service.timezone), operator=True,
+            )
+            if left is None:
+                print(f"not linked: {_cli_bbs_node_label(conn, parsed)}", file=sys.stderr)
+                return 3
+            print(f"unlinked: {_cli_bbs_node_label(conn, left)} now has its own mailbox")
+            return 0
+        peer = accounts.linked_peer(conn, parsed)
+        if peer is None:
+            print(f"not linked: {_cli_bbs_node_label(conn, parsed)}")
+        else:
+            print(f"account {accounts.canonical(conn, parsed)}: "
+                  f"{' + '.join(accounts.members(conn, parsed))}")
+        for row in conn.execute(
+            "SELECT at, event, node_id FROM identity_audit WHERE node_id IN "
+            "(SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT 20",
+            (json.dumps(list(accounts.members(conn, parsed))),),
+        ):
+            print(f"  {local_iso(row['at'], cfg.service.timezone)} {row['event']} "
+                  f"{row['node_id']}")
         return 0
     finally:
         conn.close()
@@ -5229,7 +5472,7 @@ _TOP_DESCRIPTION = (
 
 _TOP_EPILOG = """\
 Command groups
-  Run & health    run, status, doctor, radio-watchdog, notify-test, advert
+  Run & health    run, status, doctor, health-report, setup, radio-watchdog, notify-test, advert
   Watch traffic   tail, requests, digest, usefulness, db-stats
   Visitors        guestbook, block, unblock, quota, lab, mail, news
   Games           books, wordle
@@ -5322,6 +5565,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
 
+    upgrade_check_parser = _add_command(
+        sub,
+        "upgrade-check",
+        help="rehearse an upgrade on snapshots of the databases",
+        description=(
+            "Reads schema versions of the live databases read-only, snapshots them into a "
+            "private temp dir, runs the pending migrations and repairs on the snapshots, "
+            "then runs integrity, foreign-key and application checks and verifies the "
+            "newest backup. Live files are never modified, nothing is transmitted, and a "
+            "pass is not authorization to upgrade. Exits 1 if problems are found."
+        ),
+        examples=("mgarden upgrade-check", "mgarden upgrade-check --json"),
+    )
+    upgrade_check_parser.add_argument("--json", action="store_true", help="machine-readable output")
     _add_command(
         sub,
         "db-stats",
@@ -5340,6 +5597,25 @@ def build_parser() -> argparse.ArgumentParser:
             "use. Aggregate and read-only; never transmits."
         ),
     )
+    federation_parser = _add_command(
+        sub,
+        "federation",
+        help="federated boards: status, hide/unhide a peer's post",
+        description=(
+            "Local-only tools for [federation]. `hide` keeps a peer's post out of READ "
+            "even if the peer later updates it."
+        ),
+        examples=("mgarden federation status", "mgarden federation hide north-garden:42"),
+    )
+    federation_sub = federation_parser.add_subparsers(
+        dest="federation_command", required=True, metavar="<action>"
+    )
+    _add_command(federation_sub, "status", help="show peers, cursors and counts",
+                 description="Prints federation state as JSON. Read-only.")
+    for _name in ("hide", "unhide"):
+        _p = _add_command(federation_sub, _name, help=f"{_name} a federated post",
+                          description=f"{_name.capitalize()}s one imported post locally.")
+        _p.add_argument("ref", metavar="ORIGIN:ID", help="origin id and remote post id")
     news_parser = _add_command(
         sub,
         "news",
@@ -5497,6 +5773,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     unblock_parser.add_argument("node_id", metavar="node-id", help="node id, e.g. !a1b2c3d4")
 
+    identity_parser = _add_command(
+        sub,
+        "identity",
+        help="show or undo a linked MeshCore/Meshtastic identity",
+        description=(
+            "Shows whether a node is linked to an identity on the other mesh, with its link "
+            "audit trail (event names and ids only), or unlinks it. Unlinking leaves the "
+            "mailbox with the identity that started the link. Needs database.bbs_path. "
+            "Exits 2 for an invalid node id and 3 when unlinking a node that is not linked."
+        ),
+        examples=("mgarden identity status !a1b2c3d4", "mgarden identity unlink mc:!a1b2c3d4"),
+    )
+    identity_parser.add_argument("action", choices=("status", "unlink"))
+    identity_parser.add_argument("node_id", metavar="node-id", help="node id, e.g. !a1b2c3d4")
+
     _add_command(
         sub,
         "backup",
@@ -5534,6 +5825,50 @@ def build_parser() -> argparse.ArgumentParser:
             "Runs one watchdog poll: alerts, and optionally power-cycles the radio, if "
             "the node has gone deaf. Normally driven by meshgarden-watchdog.timer."
         ),
+    )
+
+    setup_parser = _add_command(
+        sub,
+        "setup",
+        help="write a validated config.toml (interactive wizard, no services started)",
+        description=(
+            "Guides you through creating a config: transport, serial device, paths, "
+            "optional metrics/dashboard ports and an optional second instance sharing one "
+            "bbs.db. Previews and validates the TOML before writing; an existing file is "
+            "kept unless --replace (then backed up). Never opens the radio, starts "
+            "services or transmits. The global --config is not used; pick the target "
+            "with --output."
+        ),
+        examples=(
+            "mgarden setup",
+            "mgarden setup --non-interactive --transport meshcore --device /dev/ttyACM0 "
+            "--output ./config.toml --database ./data/observatory.db --backup-dir ./backups "
+            "--dry-run",
+        ),
+    )
+    setup_wizard.add_arguments(setup_parser)
+
+    health_parser = _add_command(
+        sub,
+        "health-report",
+        help="operator health digest (aggregate counts, deltas, backup/schema state)",
+        description=(
+            "Prints a health report from the local database, status file and backup "
+            "directory: delivery outcomes, radio outage, queue pressure, storage, backup "
+            "age/verification and schema state, with deltas against the previous stored "
+            "report. No message text or node ids. --write stores today's report; --email "
+            "sends it only when [health] email_enabled = true. Never uses the radio."
+        ),
+        examples=("mgarden health-report", "mgarden health-report --json --write"),
+    )
+    health_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    health_parser.add_argument(
+        "--write",
+        action="store_true",
+        help="also store today's report under <database dir>/health/",
+    )
+    health_parser.add_argument(
+        "--email", action="store_true", help="send by email (requires [health] email_enabled)"
     )
 
     books_parser = _add_command(
@@ -5607,6 +5942,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "help":
         return _run_help(parser, args.topic_command)
 
+    if args.command == "setup":
+        # Runs before load_config: the wizard creates the config.
+        return setup_wizard.run(args)
+
     config_path = (
         args.config or os.environ.get("MESHTASTIC_OBSERVATORY_CONFIG") or DEFAULT_CONFIG_PATH
     )
@@ -5623,6 +5962,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_status(cfg, as_json=args.json)
         if args.command == "db-stats":
             return cmd_db_stats(cfg)
+        if args.command == "upgrade-check":
+            return upgrade.run(cfg, as_json=args.json)
         if args.command in ("news", "usefulness"):
             if not os.path.isfile(cfg.database.path):
                 print("database not found; start the daemon first", file=sys.stderr)
@@ -5685,14 +6026,22 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_guestbook_list(
                 cfg, limit=args.limit, hidden=args.hidden, as_json=args.json, topic=topic
             )
+        if args.command == "federation":
+            return cmd_federation(cfg, args)
         if args.command == "block":
             return cmd_block(cfg, args.node_id)
         if args.command == "unblock":
             return cmd_unblock(cfg, args.node_id)
+        if args.command == "identity":
+            return cmd_identity(cfg, args.action, args.node_id)
         if args.command == "backup":
             return cmd_backup(cfg)
         if args.command == "advert":
             return cmd_advert(cfg)
+        if args.command == "health-report":
+            return health_report.cmd_health_report(
+                cfg, as_json=args.json, write=args.write, email=args.email
+            )
         if args.command == "notify-test":
             return cmd_notify_test(cfg)
         if args.command == "radio-watchdog":

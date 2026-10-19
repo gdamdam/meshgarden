@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>T</title>
+<item><title>Garden meeting &amp; potluck</title><link>https://example.org/a</link><guid>a-1</guid><pubDate>Mon, 19 Oct 2026 10:00:00 GMT</pubDate><description>x</description></item>
+<item><title>&lt;b&gt;Bold&lt;/b&gt; news</title><link>https://example.org/b</link><pubDate>Mon, 19 Oct 2026 09:00:00 GMT</pubDate></item>
+<item><link>https://example.org/notitle</link></item>
+<item><title><![CDATA[<script>alert(1)</script>Safe <i>text</i>]]></title><guid>c</guid><pubDate>Mon, 19 Oct 2026 08:00:00 GMT</pubDate></item>
+</channel></rss>

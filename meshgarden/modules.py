@@ -12,10 +12,12 @@ entry points or the network.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import sqlite3
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 from meshgarden.commands import RESERVED_COMMAND_WORDS, Command
 
@@ -37,6 +39,9 @@ class ModuleRequest:
     channel: bool
     lab_unlocked: bool
     conn: sqlite3.Connection | None = None
+    # The radio's own stored BBS id, before any account linking maps it to
+    # an account id (`sender`). Only LINK/UNLINK need the difference.
+    identity: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,10 @@ class CommandModule:
     takes_argument: bool = False
     builtin: bool = False  # extracted core command; listed on its own menu pages
     operator: bool = False  # defined in config, so it may not take a reserved word
+    # Optional background service (start()/stop()), e.g. a provider fetcher.
+    # Built only by an enabled factory; the daemon starts it after startup
+    # and stops it at shutdown. Handlers read its results, never wait on it.
+    service: Any = None
 
     @property
     def words(self) -> tuple[str, ...]:
@@ -104,6 +113,9 @@ class ModuleRegistry:
 
     def words(self) -> frozenset[str]:
         return frozenset(self._by_word)
+
+    def services(self) -> list[Any]:
+        return [m.service for m in self.modules if m.service is not None]
 
     def lab_words(self) -> frozenset[str]:
         return frozenset(w for w, m in self._by_word.items() if m.lab)
@@ -191,10 +203,17 @@ def default_registry() -> ModuleRegistry:
     return _DEFAULT
 
 
-# Optional bundled modules register a factory here. A factory reads its own
-# config section and returns [] when disabled, so a disabled module never
-# initializes anything (no threads, no network clients).
-OPTIONAL_MODULE_FACTORIES: list[Callable[..., Iterable[CommandModule]]] = []
+# Bundled optional modules, one file each (meshgarden/mod_<name>.py) exposing
+# `factory(cfg) -> list[CommandModule]`. A factory reads its own config
+# section and returns [] when disabled, so a disabled module never
+# initializes anything (no threads, no network clients). A fixed tuple, not a
+# discovery mechanism: nothing outside this package can add a module.
+BUNDLED_MODULES: tuple[str, ...] = ("mod_info", "mod_find", "mod_forecast", "mod_link")
+
+
+def optional_factories() -> list[Callable[..., Iterable[CommandModule]]]:
+    # Imported lazily: every mod_* file imports this module.
+    return [importlib.import_module(f"meshgarden.{name}").factory for name in BUNDLED_MODULES]
 
 
 def configured_registry(cfg) -> ModuleRegistry:
@@ -202,14 +221,14 @@ def configured_registry(cfg) -> ModuleRegistry:
     if (lat, lon) == (0.0, 0.0):
         lat = lon = None
     registry = build_registry(latitude=lat, longitude=lon)
-    for factory in OPTIONAL_MODULE_FACTORIES:
+    for factory in optional_factories():
         try:
             modules = list(factory(cfg))
         except ModuleError:
             raise
         except Exception:
             # One broken optional module must not keep the garden off the air.
-            log.exception("command module factory %s failed; skipped", factory.__name__)
+            log.exception("command module factory %s failed; skipped", factory.__module__)
             continue
         for module in modules:
             registry.add(module)

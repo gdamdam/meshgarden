@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>
+<entry><title>Atom entry one</title><id>urn:uuid:1</id><link rel="alternate" href="https://example.org/1"/><updated>2026-10-19T11:00:00Z</updated></entry>
+<entry><title>Future entry</title><id>urn:uuid:2</id><updated>2030-01-01T00:00:00Z</updated></entry>
+<entry><title>Undated entry</title><id>urn:uuid:3</id></entry>
+<entry><title>Old entry</title><id>urn:uuid:4</id><updated>2020-01-01T00:00:00Z</updated></entry>
+</feed>

@@ -44,6 +44,10 @@ an optional dashboard. No login, no external assets, loopback by default.
 It can relay NWS Warnings and Watches for configured counties as one-line broadcasts on a public
 MeshCore channel. This is off by default; see [configuration](docs/configuration.md#weather-alerts).
 
+Two optional, off-by-default features make outbound HTTPS requests: `FORECAST` (cached NWS forecast)
+and RSS/Atom feeds imported into `NEWS`; see [configuration](docs/configuration.md#forecast).
+Optional [federation](docs/federation.md) shares selected public boards with peer gardens you trust.
+
 ## Visitor commands
 
 Commands are case-insensitive. Every reply is one message back to the requester, at most 180
@@ -69,6 +73,8 @@ UTF-8 bytes. Start with `MENU`, then `HELP <cmd>` for one-line usage of any comm
 | `WORDLE [guess \| CLUE \| GIVEUP \| SCORE]` | Today's 5-letter word, up to 6 guesses |
 | `ICHING` / `HAIKU` | One hexagram per sender per day, or one garden or mesh haiku |
 | `MOON` / `SUN` | Phase and illumination, or today's sunrise and sunset, offline |
+| `FIND <text>` | Search public guestbook notes (LAB boards too once unlocked); off unless `[find] enabled = true` |
+| operator commands | Fixed-text info commands you define with `[[commands.info]]`; listed under `MENU MORE` |
 
 Bare `HELP`, `SOS`, and `EMERGENCY` are not menu words. They get a fixed reply making clear
 Meshgarden cannot relay for help.
@@ -103,6 +109,7 @@ name, which anyone can fake, so every mail command needs a DM.
 | `MAIL` / `INBOX` | Collect pending notes |
 | `MAIL ALIAS [name \| OFF]` | Show, claim, or release your alias |
 | `REPLY #<id> <msg>` | Reply to a collected note |
+| `LINK` / `LINK <code>` / `UNLINK` | Opt-in (`identity_linking`): join your MeshCore and Meshtastic radios so they share one mailbox, LAB unlock and game state |
 
 ### Sharing your position
 
@@ -130,7 +137,9 @@ See [security and privacy](docs/security-and-privacy.md#lab-tier).
 |---|---|
 | `POST <topic> <msg>` | Post to a topic wall, 100 characters, 5 per day |
 | `READ <topic> [page]` | Read a topic wall, 3 posts per page |
+| `READ <topic> NEW` | Oldest unread posts of that wall; repeat to continue (`more: READ <topic> NEW`) |
 | `BOARDS` | List topic walls by post count |
+| `BOARDS NEW` | Unread posts per board, e.g. `wx:3` |
 
 ## Quick start
 
@@ -190,6 +199,9 @@ The test suite never broadcasts. Every transmission is a DM, enforced by a packa
   (`guestbook`, `block`, `quota`, `mail`, `lab`), `positions`, leaderboards, `backup`, and
   `restore`. Most subcommands take `--json`. Full options and exit codes are in
   [`docs/operations.md`](docs/operations.md).
+- `mgarden setup` writes a validated config (single or two-radio) without starting services, and
+  `mgarden health-report` prints an aggregate-only health digest (optional daily file and email via
+  `[health]`; see operations).
 - Configuration is one TOML file, `/etc/meshgarden/config.toml` on a Raspberry Pi install.
   Start from [`config.example.toml`](config.example.toml).
   Every key and default is in [`docs/configuration.md`](docs/configuration.md).

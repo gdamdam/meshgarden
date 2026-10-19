@@ -1,0 +1,6 @@
+{"properties": {"periods": [
+ {"name": "Tonight", "temperature": 52, "temperatureUnit": "F", "shortForecast": "Clear"},
+ {"name": "Tuesday", "temperature": 70, "temperatureUnit": "F", "shortForecast": "Sunny"},
+ {"name": "Tuesday Night", "temperature": 50, "temperatureUnit": "F", "shortForecast": "Mostly Clear"},
+ {"name": "Wednesday", "temperature": 72, "temperatureUnit": "F", "shortForecast": "Sunny"}
+]}}

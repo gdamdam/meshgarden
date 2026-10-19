@@ -34,16 +34,13 @@ main([{flag!r}])
 @pytest.mark.parametrize('command', ['SUN'])
 def test_missing_library_is_a_bounded_command_reply_not_a_crash(command):
     script = BLOCK_ASTRONOMY + f'''
-from types import SimpleNamespace
-from meshgarden.commands import Command
-from meshgarden.main import Daemon
-service = SimpleNamespace(timezone='America/Los_Angeles')
-observatory = SimpleNamespace(latitude=37.77, longitude=-122.42)
-daemon = SimpleNamespace(cfg=SimpleNamespace(service=service, observatory=observatory))
-reply = Daemon._build_response_body(daemon, Command({command!r}), '!aabbccdd', 1700000000)
+from meshgarden.modules import ModuleRequest, build_registry
+reg = build_registry(latitude=37.77, longitude=-122.42)
+req = ModuleRequest('', '!aabbccdd', 1700000000, 120, False, False)
+reply = reg.run(reg.lookup({command!r}), req)
 assert 'unavailable' in reply and len(reply.encode()) <= 120, reply
 # Unrelated offline features stay available after the failed import.
-assert 'MOON' in Daemon._build_response_body(daemon, Command.MOON, '!aabbccdd', 1700000000)
+assert 'MOON' in reg.run(reg.lookup('MOON'), req)
 '''
     result = subprocess.run(
         [sys.executable, '-c', script], cwd=ROOT, capture_output=True, text=True,

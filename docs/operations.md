@@ -7,6 +7,7 @@ privacy and quota details in [security-and-privacy.md](security-and-privacy.md).
 ## Contents
 
 - [Install and upgrade](#install-and-upgrade)
+- [Setup wizard](#setup-wizard)
 - [Two radios (shared garden)](#two-radios-shared-garden)
 - [Connecting the radio](#connecting-the-radio)
 - [How visitors reach the node](#how-visitors-reach-the-node)
@@ -162,6 +163,32 @@ keep working unchanged.
 [configuration.md](configuration.md)). When a worker stalls, it stops pinging and systemd
 restarts the unit as if the process had hung. It needs no extra dependency, and does nothing under
 a unit without `NOTIFY_SOCKET` / `WATCHDOG_USEC`.
+
+## Setup wizard
+
+`mgarden setup` writes a validated config without starting anything. It lists serial candidates
+(`/dev/serial/by-id/*`, `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/cu.usbmodem*`) by looking at the
+filesystem only; no port is opened. It asks for transport, device, config/database/backup paths and
+optional metrics and dashboard ports, and can add a second instance (the other transport) with a
+shared `bbs_path`. Collisions are refused before anything is written: same config, database, state
+directory or backup directory (compared by real path, so symlinks count), the same effective port
+(the metrics default 9108 included), a `bbs_path` equal to a database, or `bbs_path` set on only
+one instance.
+
+The TOML is previewed and checked with the normal config parser. An existing file is kept unless
+you choose to replace it; a replaced file is first copied to `<path>.bak-<timestamp>`. Writes are
+atomic with mode `0600`. Cancelling (Ctrl-C, EOF, "n") changes nothing.
+
+```
+mgarden setup --non-interactive --transport meshcore --device /dev/ttyACM0 \
+  --output ./config.toml --database ./data/observatory.db --backup-dir ./backups \
+  [--expected-node-id '!xxxxxxxx'] [--metrics-port N] [--web-port N] [--bbs-path PATH] \
+  [--replace] [--dry-run]
+```
+
+`--output` is the file to write (the global `--config` is not used). Without `--replace` an
+existing file is left alone and the command exits 1. The non-interactive form configures one
+instance; the node id defaults to a placeholder you must edit before running the daemon.
 
 ## Two radios (shared garden)
 
@@ -366,6 +393,21 @@ name, or guestbook/DM text. The daemon also writes it to `<database dir>/digest/
   long as the file does not exist and yesterday had activity.
 - **Retention.** Files are kept for 90 days and count toward the storage cap.
 
+### Health digest
+
+`mgarden health-report [--json] [--write] [--email]` prints an aggregate-only health report:
+request outcomes (acked, failed, unknown, expired) over 24 hours, radio connection and outage from
+`status.json`, queue depth and drops, database sizes, newest backup age and an integrity check of
+it, schema version and pending migrations, and a `problems` list. It also shows deltas against the
+previous stored report. It never includes message text, node ids or names and never uses the radio.
+
+- **Scheduled run.** With `[health] enabled = true` the daemon writes
+  `<database dir>/health/health-YYYY-MM-DD.json` (owner-only) once per local day at or after
+  `hour`, and keeps `history_days` files. Disabled by default.
+- **Email.** Off unless `email_enabled = true` with every SMTP field set; the password is read
+  from `smtp_password_file`. One attempt per day; failures are logged. `--email` errors if email
+  is not enabled. See [`[health]`](configuration.md#health).
+
 ### Debug trace
 
 `mgarden run --debug` prints every DM's raw text, sender, recipient and parsed command to stderr
@@ -419,6 +461,20 @@ sudo systemctl start meshtastic-observatory
 target without `--yes`. To check a backup without touching the live database, point a throwaway
 `config.toml` (different `database.path`) at a copy and run `mgarden db-stats`, or open it with
 `sqlite3`. (On a Pi install the service is `meshgarden` and state is under `/var/lib/meshgarden`.)
+
+### Upgrade preflight
+
+`mgarden upgrade-check [--json]` rehearses an upgrade without touching the live files. It opens
+the main and shared BBS databases read-only to read their schema versions, copies each with
+SQLite's backup API into a private (0700) temp dir, runs the pending migrations and repairs on the
+copies, then runs `PRAGMA integrity_check`, `foreign_key_check` and application checks (id
+sequences above every referenced mail/guestbook/news id and NEW cursor, bare `!` ids a MeshCore
+instance would leave in a shared file). Reply routes whose mail id now belongs to a different
+recipient are reported as warnings and never repaired or deleted. It also reports the newest
+backup, its age, and whether it passes `integrity_check` on a temp copy. Snapshots, including
+`-wal`/`-shm` files, are removed on success and failure. Exit `0` when no problems were found,
+`1` otherwise. A pass is a rehearsal only, not authorization to upgrade; take a fresh `mgarden
+backup` first.
 
 ## Moderation
 
@@ -595,6 +651,8 @@ found. The table lists per-command exceptions.
 | `status [--json]` | Connectivity, identity, queue depth, storage, backup health. | `0` ok, `1` database not found |
 | `db-stats` | Per-table row counts. | `0` ok, `1` database not found |
 | `doctor [--json]` | Operator health checks (identity, radio device, database, disk, backups, timezone, status file, metrics port). | `0` all ok, `1` one or more failed |
+| `setup [--non-interactive ...]` | Config wizard; see [Setup wizard](#setup-wizard). | `0` ok/cancelled, `1` exists without `--replace`, `2` invalid |
+| `health-report [--json] [--write] [--email]` | Aggregate health digest; see [Health digest](#health-digest). | `0` ok, `1` failure, `2` email not enabled |
 | `help [command]` | Full help, or one command's help; an unknown command lists the valid ones. With no command, prints full help to stderr. | `0` ok, `2` unknown or no command |
 | `tail [-n N \| --from-start]` | Follow the `run --debug` trace file (exists only while running with `--debug`). `-n N` prints the last N lines first; Ctrl-C exits cleanly. | `0` ok, `1` trace file not found |
 | `advert` | Ask the running MeshCore daemon for a flood advertisement. Transmits. | nonzero on any failure |
@@ -617,6 +675,7 @@ found. The table lists per-command exceptions.
 | Subcommand | Purpose | Exit codes |
 |---|---|---|
 | `backup` | Run a backup now. | `0` ok, `1` failed or refused |
+| `upgrade-check [--json]` | Rehearse an upgrade on snapshots; live files untouched. | `0` no problems, `1` problems found |
 | `restore <backup-path> [--overwrite] [--yes]` | Restore a backup into the configured database; refuses an existing target without `--yes`. | `0` ok, `1` refused or failed |
 
 ### Moderation and visitors

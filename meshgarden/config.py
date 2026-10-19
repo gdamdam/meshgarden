@@ -14,7 +14,8 @@ import os
 import re
 import tomllib
 import unicodedata
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -235,6 +236,9 @@ class ServiceConfig:
     # New in the directory/boards/mail epic. seen_enabled lets an operator
     # turn off SEEN alone; the other three commands have no such toggle.
     seen_enabled: bool = True
+    # LINK/UNLINK: one person's MeshCore and Meshtastic radios as one BBS
+    # account (meshgarden/accounts.py). Off by default; needs database.bbs_path.
+    identity_linking: bool = False
     daily_post_quota: int = 5
     daily_mail_quota: int = 3
     max_topics: int = 50
@@ -366,11 +370,110 @@ class WeatherConfig:
 
 
 @dataclass(frozen=True)
+class ForecastConfig:
+    # Off by default: no thread starts and no network call is ever made.
+    enabled: bool = False
+    # None falls back to [observatory] latitude/longitude when those are set.
+    latitude: float | None = None
+    longitude: float | None = None
+    units: str = "us"  # "us" (F) or "si" (C)
+    refresh_interval_seconds: int = 3600
+    timeout_seconds: int = 10
+    max_retries: int = 2
+    # None means 3 x refresh_interval_seconds, resolved at parse time.
+    stale_after_seconds: int | None = None
+    # api.weather.gov requires an identifying User-Agent. Required when enabled.
+    contact: str = ""
+
+
+@dataclass(frozen=True)
+class FeedsConfig:
+    # Off by default: no thread starts and no network call is ever made.
+    enabled: bool = False
+    urls: tuple[str, ...] = ()  # https only
+    poll_interval_seconds: int = 3600
+    max_items_per_feed: int = 5
+    max_response_bytes: int = 512000
+    item_expiry_days: int = 7
+    timeout_seconds: int = 10
+    max_redirects: int = 3
+    max_stored_items: int = 50
+    contact: str = ""  # User-Agent; required when enabled
+
+
+@dataclass(frozen=True)
+class FederationPeer:
+    origin_id: str
+    url: str  # http(s) base URL of the peer's federation listener
+    secret_file: str  # shared HMAC secret; read once at config load
+    secret: bytes = field(default=b"", repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class FederationConfig:
+    # Off by default: no listener, no poller, no network call.
+    enabled: bool = False
+    origin_id: str = ""  # [a-z0-9-]{3,24}; names this garden to its peers
+    listen_host: str = "127.0.0.1"
+    listen_port: int = 8766
+    boards: tuple[str, ...] = ()  # board topics exported and imported
+    peers: tuple[FederationPeer, ...] = ()
+    poll_interval_seconds: int = 300
+    batch_size: int = 50
+    max_stored_per_peer: int = 2000
+    timeout_seconds: int = 10
+
+
+@dataclass(frozen=True)
 class ModerationConfig:
     # Path to a banned-terms file (one term per line, "#" comments); empty
     # string disables the SIGN banned-word guard. When non-empty, the file
     # must exist and be readable at config load time.
     banned_words_file: str = ""
+
+
+@dataclass(frozen=True)
+class HealthConfig:
+    # Operator health digest (aggregate counts only). The scheduled daily run
+    # is opt-in; `mgarden health-report` always works locally. Email needs
+    # every SMTP field; the password lives in a file, never inline.
+    enabled: bool = False
+    hour: int = 7  # local hour 0-23 in [service] timezone
+    history_days: int = 14
+    email_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_starttls: bool = True
+    smtp_username: str = ""
+    smtp_password_file: str = ""
+    email_from: str = ""
+    email_to: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InfoCommand:
+    """One `[[commands.info]]` entry: a fixed-text command defined by the
+    operator. `response` is literal text, never templated."""
+
+    name: str
+    response: str
+    help: str = ""
+    aliases: tuple[str, ...] = ()
+    # "channel" only makes the command *eligible* on the public channel;
+    # the central gate still requires service.mode = "channel".
+    scope: str = "dm"
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class CommandsConfig:
+    info: tuple[InfoCommand, ...] = ()
+
+
+@dataclass(frozen=True)
+class FindConfig:
+    # Off by default: FIND is not registered, parsed or listed while False.
+    enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -389,6 +492,12 @@ class Config:
     observatory: ObservatoryConfig = field(default_factory=ObservatoryConfig)
     web: WebConfig = field(default_factory=WebConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
+    forecast: ForecastConfig = field(default_factory=ForecastConfig)
+    feeds: FeedsConfig = field(default_factory=FeedsConfig)
+    federation: FederationConfig = field(default_factory=FederationConfig)
+    commands: CommandsConfig = field(default_factory=CommandsConfig)
+    find: FindConfig = field(default_factory=FindConfig)
+    health: HealthConfig = field(default_factory=HealthConfig)
 
 
 def _reject_unknown_keys(table: dict, cls: type, table_name: str) -> None:
@@ -652,6 +761,8 @@ def _parse_service(table: dict) -> ServiceConfig:
         raise ConfigError(f"service.seen_enabled must be a bool (got {kwargs['seen_enabled']!r})")
     if not isinstance(kwargs["mail_public"], bool):
         raise ConfigError("service.mail_public must be a bool")
+    if not isinstance(kwargs["identity_linking"], bool):
+        raise ConfigError("service.identity_linking must be a bool")
     _require_int_at_least(kwargs["daily_post_quota"], 0, "service", "daily_post_quota")
     _require_int_at_least(kwargs["daily_mail_quota"], 0, "service", "daily_mail_quota")
     _require_int_at_least(kwargs["max_topics"], 1, "service", "max_topics")
@@ -950,7 +1061,255 @@ def _parse_weather(table: dict) -> WeatherConfig:
     return WeatherConfig(**kwargs)
 
 
+def _parse_health(table: dict) -> HealthConfig:
+    _reject_unknown_keys(table, HealthConfig, "health")
+    defaults = HealthConfig()
+    kw = {f.name: table.get(f.name, getattr(defaults, f.name)) for f in fields(HealthConfig)}
+    for key in ("enabled", "email_enabled", "smtp_starttls"):
+        if not isinstance(kw[key], bool):
+            raise ConfigError(f"health.{key} must be a bool (got {kw[key]!r})")
+    _require_int_in_range(kw["hour"], 0, 23, "health", "hour")
+    _require_int_in_range(kw["history_days"], 1, 365, "health", "history_days")
+    _require_int_in_range(kw["smtp_port"], 1, 65535, "health", "smtp_port")
+    for key in ("smtp_host", "smtp_username", "smtp_password_file", "email_from"):
+        _require_str(kw[key], "health", key)
+    to = kw["email_to"]
+    if not isinstance(to, (list, tuple)) or not all(isinstance(a, str) and a for a in to):
+        raise ConfigError("health.email_to must be a list of non-empty strings")
+    kw["email_to"] = tuple(to)
+    if kw["email_enabled"]:
+        missing = [
+            k
+            for k in ("smtp_host", "smtp_username", "smtp_password_file", "email_from", "email_to")
+            if not kw[k]
+        ]
+        if missing:
+            raise ConfigError(f"health.email_enabled = true requires: {', '.join(missing)}")
+    return HealthConfig(**kw)
+
+
+_INFO_COMMAND_MAX_ENTRIES = 16
+_INFO_TEXT_MAX_BYTES = 180
+
+
+def _parse_info_commands(
+    table: dict, *, unlock_word: str, max_text_bytes: int | None
+) -> CommandsConfig:
+    """Operator information commands. The byte limit is the Meshtastic-sized
+    180; a MeshCore radio's budget may be lower (120 by default), and replies
+    are always truncated to the active transport's budget at send time, so a
+    longer response is cut rather than dropped. When the budget is knowable
+    from config (radio.meshcore_max_text_bytes), it is enforced here."""
+    from meshgarden.commands import RESERVED_COMMAND_WORDS
+    from meshgarden.modules import ModuleError, validate_word
+
+    _reject_unknown_keys(table, CommandsConfig, "commands")
+    raw = table.get("info", [])
+    if not isinstance(raw, list) or not all(isinstance(e, dict) for e in raw):
+        raise ConfigError("[[commands.info]] must be an array of tables")
+    if len(raw) > _INFO_COMMAND_MAX_ENTRIES:
+        raise ConfigError(f"at most {_INFO_COMMAND_MAX_ENTRIES} [[commands.info]] entries")
+    limit = _INFO_TEXT_MAX_BYTES if max_text_bytes is None else min(
+        _INFO_TEXT_MAX_BYTES, max_text_bytes
+    )
+    seen: set[str] = set()
+    entries = []
+    for i, entry in enumerate(raw, 1):
+        where = f"commands.info[{i}]"
+        _reject_unknown_keys(entry, InfoCommand, where)
+        if "name" not in entry or "response" not in entry:
+            raise ConfigError(f"{where}: name and response are required")
+        for key in ("name", "response", "help", "scope"):
+            if key in entry:
+                _require_str(entry[key], where, key)
+        enabled = entry.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigError(f"{where}.enabled must be a bool (got {enabled!r})")
+        aliases = entry.get("aliases", [])
+        if not isinstance(aliases, list) or not all(isinstance(a, str) for a in aliases):
+            raise ConfigError(f"{where}.aliases must be a list of strings")
+        scope = entry.get("scope", "dm")
+        if scope not in ("dm", "channel"):
+            raise ConfigError(f"{where}.scope must be 'dm' or 'channel' (got {scope!r})")
+        words: list[str] = []
+        for raw_word in (entry["name"], *aliases):
+            try:
+                word = validate_word(raw_word, what=f"{where} word")
+            except ModuleError as exc:
+                raise ConfigError(str(exc)) from None
+            if word in RESERVED_COMMAND_WORDS:
+                raise ConfigError(f"{where}: {word} is a built-in or reserved command word")
+            if unlock_word and word == unlock_word.upper():
+                raise ConfigError(f"{where}: {word} must not equal service.lab_unlock_word")
+            if word in seen or word in words:
+                raise ConfigError(f"{where}: {word} is defined twice")
+            words.append(word)
+        seen.update(words)
+        response = _sanitize_config_text(entry["response"])
+        if not response:
+            raise ConfigError(f"{where}.response must not be empty")
+        if len(response.encode("utf-8")) > limit:
+            raise ConfigError(
+                f"{where}.response must be at most {limit} UTF-8 bytes "
+                "(a MeshCore radio's budget may be lower; replies are truncated "
+                "to the active transport budget)"
+            )
+        help_text = _sanitize_config_text(entry.get("help", ""))
+        if len(help_text.encode("utf-8")) > _INFO_TEXT_MAX_BYTES:
+            raise ConfigError(f"{where}.help must be at most {_INFO_TEXT_MAX_BYTES} UTF-8 bytes")
+        entries.append(InfoCommand(
+            name=words[0], response=response, help=help_text, aliases=tuple(words[1:]),
+            scope=scope, enabled=enabled,
+        ))
+    return CommandsConfig(info=tuple(entries))
+
+
+def _parse_find(table: dict) -> FindConfig:
+    _reject_unknown_keys(table, FindConfig, "find")
+    enabled = table.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"find.enabled must be a bool (got {enabled!r})")
+    return FindConfig(enabled=enabled)
+
+
+def _parse_forecast(table: dict) -> ForecastConfig:
+    _reject_unknown_keys(table, ForecastConfig, "forecast")
+    defaults = ForecastConfig()
+    kw = {f.name: table.get(f.name, getattr(defaults, f.name)) for f in fields(ForecastConfig)}
+    if not isinstance(kw["enabled"], bool):
+        raise ConfigError(f"forecast.enabled must be a bool (got {kw['enabled']!r})")
+    _require_str(kw["contact"], "forecast", "contact")
+    if kw["units"] not in ("us", "si"):
+        raise ConfigError(f"forecast.units must be 'us' or 'si' (got {kw['units']!r})")
+    for key, lo, hi in (("latitude", -90, 90), ("longitude", -180, 180)):
+        if kw[key] is not None:
+            kw[key] = _require_number_in_range(kw[key], lo, hi, "forecast", key)
+    _require_int_at_least(kw["refresh_interval_seconds"], 600, "forecast",
+                          "refresh_interval_seconds")
+    _require_int_in_range(kw["timeout_seconds"], 1, 60, "forecast", "timeout_seconds")
+    _require_int_in_range(kw["max_retries"], 0, 5, "forecast", "max_retries")
+    if kw["stale_after_seconds"] is None:
+        kw["stale_after_seconds"] = 3 * kw["refresh_interval_seconds"]
+    _require_int_at_least(kw["stale_after_seconds"], kw["refresh_interval_seconds"],
+                          "forecast", "stale_after_seconds")
+    if kw["enabled"] and not kw["contact"].strip():
+        raise ConfigError("forecast.contact is required when forecast.enabled = true")
+    return ForecastConfig(**kw)
+
+
+_FED_ORIGIN_RE = re.compile(r"^[a-z0-9-]{3,24}$")
+_FED_BOARD_RE = re.compile(r"^[a-z0-9]{2,12}$")
+FEDERATION_MIN_SECRET_BYTES = 32
+
+
+def _parse_federation(table: dict) -> FederationConfig:
+    _reject_unknown_keys(table, FederationConfig, "federation")
+    defaults = FederationConfig()
+    kw = {f.name: table.get(f.name, getattr(defaults, f.name)) for f in fields(FederationConfig)}
+    if not isinstance(kw["enabled"], bool):
+        raise ConfigError(f"federation.enabled must be a bool (got {kw['enabled']!r})")
+    _require_str(kw["origin_id"], "federation", "origin_id")
+    _require_str(kw["listen_host"], "federation", "listen_host")
+    _require_int_in_range(kw["listen_port"], 0, 65535, "federation", "listen_port")
+    _require_int_at_least(kw["poll_interval_seconds"], 60, "federation", "poll_interval_seconds")
+    _require_int_in_range(kw["batch_size"], 1, 200, "federation", "batch_size")
+    _require_int_in_range(kw["max_stored_per_peer"], 1, 100_000, "federation",
+                          "max_stored_per_peer")
+    _require_int_in_range(kw["timeout_seconds"], 1, 60, "federation", "timeout_seconds")
+    boards = kw["boards"]
+    if not isinstance(boards, list | tuple) or not all(isinstance(b, str) for b in boards):
+        raise ConfigError("federation.boards must be a list of strings")
+    norm_boards = []
+    for board in boards:
+        name = board.strip().lower().removeprefix("#")
+        if not _FED_BOARD_RE.match(name):
+            raise ConfigError(f"federation.boards entry {board!r} is not a valid board topic")
+        if name not in norm_boards:
+            norm_boards.append(name)
+    kw["boards"] = tuple(norm_boards)
+    raw_peers = kw["peers"]
+    if not isinstance(raw_peers, list | tuple):
+        raise ConfigError("federation.peers must be an array of tables")
+    peers = []
+    for raw in raw_peers:
+        if isinstance(raw, FederationPeer):
+            peers.append(raw)
+            continue
+        _reject_unknown_keys(raw, FederationPeer, "federation.peers")
+        for key in ("origin_id", "url", "secret_file"):
+            if key not in raw:
+                raise ConfigError(f"federation.peers entry is missing {key}")
+            _require_str(raw[key], "federation.peers", key)
+        if not _FED_ORIGIN_RE.match(raw["origin_id"]):
+            raise ConfigError(
+                f"federation.peers origin_id {raw['origin_id']!r} must match [a-z0-9-]{{3,24}}"
+            )
+        parts = urlsplit(raw["url"])
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ConfigError(f"federation.peers url {raw['url']!r} must be http(s)://")
+        try:
+            with open(raw["secret_file"], "rb") as fh:
+                secret = fh.read().strip()
+        except OSError as exc:
+            raise ConfigError(
+                f"federation.peers secret_file {raw['secret_file']!r} unreadable: {exc}"
+            ) from exc
+        if len(secret) < FEDERATION_MIN_SECRET_BYTES:
+            raise ConfigError(
+                f"federation.peers secret_file for {raw['origin_id']} must hold at least "
+                f"{FEDERATION_MIN_SECRET_BYTES} bytes"
+            )
+        peers.append(FederationPeer(raw["origin_id"], raw["url"].rstrip("/"),
+                                    raw["secret_file"], secret))
+    ids = [p.origin_id for p in peers]
+    if len(set(ids)) != len(ids):
+        raise ConfigError("federation.peers origin_id values must be unique")
+    kw["peers"] = tuple(peers)
+    if kw["enabled"]:
+        if not _FED_ORIGIN_RE.match(kw["origin_id"]):
+            raise ConfigError("federation.origin_id must match [a-z0-9-]{3,24} when enabled")
+        if not kw["boards"]:
+            raise ConfigError("federation.boards must not be empty when federation.enabled")
+        if kw["origin_id"] in ids:
+            raise ConfigError("federation.origin_id must differ from every peer origin_id")
+    return FederationConfig(**kw)
+
+
+def _parse_feeds(table: dict) -> FeedsConfig:
+    _reject_unknown_keys(table, FeedsConfig, "feeds")
+    defaults = FeedsConfig()
+    kw = {f.name: table.get(f.name, getattr(defaults, f.name)) for f in fields(FeedsConfig)}
+    if not isinstance(kw["enabled"], bool):
+        raise ConfigError(f"feeds.enabled must be a bool (got {kw['enabled']!r})")
+    _require_str(kw["contact"], "feeds", "contact")
+    urls = kw["urls"]
+    if not isinstance(urls, list | tuple) or not all(isinstance(u, str) for u in urls):
+        raise ConfigError("feeds.urls must be a list of strings")
+    for url in urls:
+        parts = urlsplit(url)
+        if parts.scheme != "https" or not parts.hostname:
+            raise ConfigError(f"feeds.urls entry {url!r} must be an https:// URL")
+    kw["urls"] = tuple(urls)
+    _require_int_at_least(kw["poll_interval_seconds"], 900, "feeds", "poll_interval_seconds")
+    _require_int_in_range(kw["max_items_per_feed"], 1, 20, "feeds", "max_items_per_feed")
+    _require_int_in_range(kw["max_response_bytes"], 1024, 5_000_000, "feeds",
+                          "max_response_bytes")
+    _require_int_in_range(kw["item_expiry_days"], 1, 365, "feeds", "item_expiry_days")
+    _require_int_in_range(kw["timeout_seconds"], 1, 60, "feeds", "timeout_seconds")
+    _require_int_in_range(kw["max_redirects"], 0, 10, "feeds", "max_redirects")
+    _require_int_in_range(kw["max_stored_items"], 1, 1000, "feeds", "max_stored_items")
+    if kw["enabled"]:
+        if not kw["contact"].strip():
+            raise ConfigError("feeds.contact is required when feeds.enabled = true")
+        if not kw["urls"]:
+            raise ConfigError("feeds.urls must not be empty when feeds.enabled = true")
+    return FeedsConfig(**kw)
+
+
 _TOP_LEVEL_SECTIONS = {
+    "commands",
+    "find",
+    "health",
     "radio",
     "service",
     "database",
@@ -961,6 +1320,9 @@ _TOP_LEVEL_SECTIONS = {
     "observatory",
     "web",
     "weather",
+    "forecast",
+    "feeds",
+    "federation",
 }
 
 
@@ -975,6 +1337,10 @@ def parse_config(data: dict) -> Config:
 
     radio = _parse_radio(data["radio"])
     service = _parse_service(data.get("service", {}))
+    if service.identity_linking and not data["database"].get("bbs_path"):
+        raise ConfigError(
+            "service.identity_linking = true requires database.bbs_path (a shared bbs.db)"
+        )
     if service.mode == "channel" and radio.transport != "meshcore":
         raise ConfigError("service.mode='channel' requires radio.transport='meshcore'")
     if service.mode == "channel" and not radio.meshcore_channel:
@@ -984,6 +1350,20 @@ def parse_config(data: dict) -> Config:
         raise ConfigError("weather.enabled = true requires radio.transport = 'meshcore'")
     if weather.enabled and weather.channel == radio.meshcore_channel:
         raise ConfigError("weather.channel must differ from radio.meshcore_channel")
+    commands = _parse_info_commands(
+        data.get("commands", {}),
+        unlock_word=service.lab_unlock_word,
+        max_text_bytes=radio.meshcore_max_text_bytes if radio.transport == "meshcore" else None,
+    )
+    forecast = _parse_forecast(data.get("forecast", {}))
+    if forecast.enabled and (forecast.latitude is None or forecast.longitude is None):
+        obs = _parse_observatory(data.get("observatory", {}))
+        if (obs.latitude, obs.longitude) == (0.0, 0.0):
+            raise ConfigError(
+                "forecast.latitude/longitude are required when forecast.enabled = true "
+                "(or set [observatory] latitude/longitude)"
+            )
+        forecast = replace(forecast, latitude=obs.latitude, longitude=obs.longitude)
     return Config(
         radio=radio,
         service=service,
@@ -995,6 +1375,12 @@ def parse_config(data: dict) -> Config:
         observatory=_parse_observatory(data.get("observatory", {})),
         web=_parse_web(data.get("web", {})),
         weather=weather,
+        forecast=forecast,
+        feeds=_parse_feeds(data.get("feeds", {})),
+        federation=_parse_federation(data.get("federation", {})),
+        commands=commands,
+        find=_parse_find(data.get("find", {})),
+        health=_parse_health(data.get("health", {})),
     )
 
 

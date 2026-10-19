@@ -94,6 +94,7 @@ Notes:
 | `max_topics` | `50` | Max board topics ever created, including hidden ones |
 | `mail_pending_limit` | `5` | Max undelivered notes held per recipient |
 | `mail_public` | `true` | `MAIL`/`INBOX`/`REPLY` work without LAB; recipients still opt in |
+| `identity_linking` | `false` | `LINK`/`UNLINK` join one person's MeshCore and Meshtastic radios into one BBS account; requires `database.bbs_path` (see [security-and-privacy.md](security-and-privacy.md#linked-identities)) |
 | `lab_unlock_word` | `""` | Word that unlocks the LAB tier; `""` turns the tier off for everyone |
 | `mobile_dm_recovery_enabled` | `false` | Experimental DM fallback, see [below](#experimental-mobile-dm-recovery) |
 | `mobile_dm_recovery_destinations` | `[]` | Nodes the fallback applies to; empty means all MeshCore recipients |
@@ -201,6 +202,97 @@ authentication either way.
 
 See [Weather alerts](#weather-alerts) below for behavior and the full key table.
 
+## `[health]`
+
+Operator health digest; see [Health digest](operations.md#health-digest). Disabled by default.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Write one report per local day from the daemon. |
+| `hour` | `7` | Local hour (0-23, `[service] timezone`) at or after which it runs. |
+| `history_days` | `14` | Reports kept in `<database dir>/health/` (1-365). |
+| `email_enabled` | `false` | Email each scheduled report. Needs every SMTP key below. |
+| `smtp_host`, `smtp_port` | `""`, `587` | SMTP server. |
+| `smtp_starttls` | `true` | Use STARTTLS before login. |
+| `smtp_username` | `""` | Login name. |
+| `smtp_password_file` | `""` | Path to a file holding the password (never inline). |
+| `email_from`, `email_to` | `""`, `[]` | Sender and recipient list. |
+
+## `[[commands.info]]` and `[find]`
+
+Operator information commands. Each `[[commands.info]]` entry (at most 16) adds a command that replies
+with fixed text:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `name` | required | 1-12 ASCII letters/digits (`-`, `_` allowed). Must not be a built-in or reserved word, the `lab_unlock_word`, or used twice. |
+| `aliases` | `[]` | Extra words, same rules. |
+| `help` | `""` | One line shown in `MENU MORE` and `HELP <name>` (max 180 UTF-8 bytes). |
+| `response` | required | Literal reply text, max 180 UTF-8 bytes. No templating, files or shell. |
+| `scope` | `"dm"` | `"channel"` makes the command eligible on the MeshCore public channel; it still answers there only when `service.mode = "channel"`. |
+| `enabled` | `true` | `false` removes it from parsing, `MENU MORE` and `HELP`. |
+
+A MeshCore radio's text budget may be lower than 180 bytes (120 by default). Replies are truncated to the
+active transport budget; if `radio.meshcore_max_text_bytes` is set, responses longer than it are rejected
+at load. Replies count against the normal daily command quota. Logged as `CUSTOM`.
+
+`[find] enabled = false` (default) controls `FIND <text>`: it searches visible guestbook notes (and LAB
+boards for an unlocked sender in a DM; boards are never searched on the public channel), returns at
+most 3 matches from the latest 2000 entries, and never reads mail, aliases, positions or games.
+
+## `[forecast]`
+
+Off by default. `FORECAST` replies with a short forecast read from an in-memory cache; a background
+thread refreshes it, so a command never waits on the network. The one provider is the U.S. National
+Weather Service (`api.weather.gov`: `/points/{lat},{lon}`, then the forecast URL it names).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | `true` starts the fetcher thread and registers `FORECAST`. |
+| `latitude`, `longitude` | observatory | Required when enabled; falls back to `[observatory]` if non-zero. |
+| `units` | `"us"` | `"us"` (F) or `"si"` (C). |
+| `refresh_interval_seconds` | `3600` | Minimum 600. |
+| `timeout_seconds` | `10` | Per request. |
+| `max_retries` | `2` | Extra attempts per refresh, with backoff. |
+| `stale_after_seconds` | 3 x refresh | Older data is labelled `STALE, 5h old`. |
+| `contact` | `""` | Goes in the `User-Agent`; required when enabled. |
+
+Reply: `🌤 Forecast (NWS, 25m ago)` then the next two or three periods, trimmed to the radio budget.
+Before the first fetch it says `Forecast not available yet.`; a failing provider leaves the last
+data in place, which turns `STALE`. `FORECAST` also works on the public channel (public info).
+`WX` is unchanged. There is no forecast worker heartbeat: `metrics.WORKERS` is a fixed label set.
+
+## `[feeds]`
+
+Off by default. Imports RSS 2.0 / Atom items into NEWS as plain text (`host: title`, at most 84
+bytes), read on demand with `NEWS`; imports are never broadcast.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Starts the poller thread. |
+| `urls` | `[]` | `https://` feed URLs only; required when enabled. |
+| `poll_interval_seconds` | `3600` | Minimum 900. |
+| `max_items_per_feed` | `5` | 1 to 20, newest-listed first. |
+| `max_response_bytes` | `512000` | Larger responses are discarded. |
+| `item_expiry_days` | `7` | Imported items expire this long after publication. |
+| `timeout_seconds` | `10` | Per request. |
+| `max_redirects` | `3` | https to https only; a redirect to `http://` is refused. |
+| `max_stored_items` | `50` | Oldest imported rows are pruned beyond this. |
+| `contact` | `""` | Goes in the `User-Agent`; required when enabled. |
+
+Documents with a `<!DOCTYPE` or `<!ENTITY` are rejected (entity-expansion defence). Items are
+de-duplicated on a hash of feed URL plus guid/link/title, so restarts do not re-import. Undated
+items take fetch time, future-dated items are clamped to fetch time, items without a title are
+skipped. Bookkeeping lives in the main database table `news_imports`; only rows listed there are
+ever pruned, and manual NEWS (`mgarden news add`) is never touched. With `database.bbs_path` set,
+enable feeds on one instance only, or each instance imports its own copy.
+
+## `[federation]`
+
+Off by default; shares selected public boards with trusted peer gardens. Keys, peers and the wire
+protocol are in [federation.md](federation.md).
+
+## Metrics
 ## Metrics
 
 `GET http://<metrics.listen>:<metrics.port>/metrics` serves Prometheus text format. It is

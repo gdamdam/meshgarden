@@ -102,6 +102,21 @@ every `poll_interval_seconds` (default 120). It carries only a `User-Agent` of
 or its traffic is sent. The resulting lines are public broadcasts on the alert channel and hold
 only NWS event names, zone names and times.
 
+### Forecast and feeds
+
+Both are off by default and make no outbound requests unless enabled. `[forecast]` fetches
+`api.weather.gov` for the configured coordinates (the garden's location is in the request URL).
+`[feeds]` fetches only the https URLs the operator lists, follows at most a few https-to-https
+redirects, caps response size, rejects XML with a DOCTYPE/ENTITY, and stores plain text only. Each
+request sends only `User-Agent: meshgarden/<version> (<contact>)`. Fetching runs on its own thread:
+a slow or failing provider never delays commands.
+
+### Federation
+
+`[federation]` (off by default) opens a listener and polls peers you list. Only board post bodies
+leave the garden, signed with a shared secret kept in a file; no mail, identities, positions or
+DMs. See [federation.md](federation.md) for the trust assumptions.
+
 ## MeshCore channel interaction
 
 **MeshCore channel senders are unauthenticated, more starkly than Meshtastic display names.** A
@@ -260,6 +275,32 @@ observatory, so `SEEN <node> MC` reveals when that node was last heard on the ot
 metadata that mesh already broadcasts). MeshCore ids in shared tables are stored with an `mc:`
 prefix, so a node id on one mesh can never be mistaken for, or impersonate, the same-looking id on
 the other. INFO tells visitors when this sharing is on.
+
+### Linked identities
+
+With `[service] identity_linking = true` (both instances, shared `bbs.db`), `LINK` on one radio
+returns an 8-character code valid for 10 minutes; `LINK <code>` from a radio on the *other* mesh
+joins the two into one account. What this proves, and what it does not:
+
+- Proof is control of both radios: each half arrives as an authenticated DM on its own transport,
+  the same trust Meshgarden already gives a DM sender. Display names and short-id matches never link
+  anything. Same-mesh pairs are refused.
+- Codes are single-use and stored only as a SHA-256 hash; a refused attempt with a valid code burns
+  it. Five failed attempts per identity per day stop further tries.
+- `identity_audit` records `link_started`, `linked`, `link_failed`, `unlinked` and
+  `operator_unlinked` with node ids and a timestamp; never a code or message text. It is pruned after
+  a year. No command lists links, so there is no public identity directory.
+- Merge policy: mail and reply routes addressed to the joining radio move to the account (the radio
+  that started the link). The account's alias, mail preference and LAB unlock win; the joiner's apply
+  only when the account has none (a conflicting joiner alias is released). NEW and board cursors take
+  the lower mark per key, so nothing unread is skipped. Same-day WORDLE/BOOK rows keep the further
+  state (solved, else more guesses) and the duplicate is taken out of the day's totals: no extra
+  guesses, no double solve. A blocked radio cannot link, and blocking either radio blocks both.
+  Command quotas stay per radio.
+- Unlinking (`UNLINK` from either radio, or `mgarden identity unlink <node>`) leaves the mailbox and
+  all account state with the radio that started the link; the other radio starts with an empty
+  mailbox and a copy of today's game state, so unlinking never grants a new game. Guestbook and board
+  posts keep their original author either way.
 
 ## Topic boards
 

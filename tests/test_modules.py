@@ -76,7 +76,7 @@ def test_broken_factory_is_skipped(monkeypatch, tmp_path):
     def broken(cfg):
         raise RuntimeError("bad")
 
-    monkeypatch.setattr(modules, "OPTIONAL_MODULE_FACTORIES", [broken])
+    monkeypatch.setattr(modules, "optional_factories", lambda: [broken])
     reg = modules.configured_registry(_cfg(tmp_path))
     assert reg.lookup("MOON") is not None
 

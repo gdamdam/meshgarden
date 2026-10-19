@@ -9,6 +9,47 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-19
+
+### Added
+
+- `LINK` / `UNLINK` (opt-in `[service] identity_linking = true`, needs `database.bbs_path`): a person
+  joins their MeshCore and Meshtastic radios into one BBS account with an expiring, single-use code
+  sent from one radio and entered on the other. Mail, reply routes, alias, prefs, NEW/board cursors,
+  LAB and games then follow the account; blocks on either radio block both; quotas stay per radio.
+  `mgarden identity status|unlink` for operators. Migration 22 / bbs migration 4 add the tables.
+- Optional command modules (`meshgarden/modules.py`): one small interface for bundled commands, with
+  routing, limits and sending kept central; MOON and SUN moved onto it. `MENU MORE` lists enabled
+  optional commands.
+
+- `BOARDS NEW` and `READ <board> NEW` (LAB): per-reader, per-board unread tracking. A read advances the cursor
+  only once its reply is ACKed (lost ACKs re-deliver); hidden posts are skipped. Migration 21 adds
+  `board_cursors` / `board_cursor_pending`; shared BBS files get them via bbs migration 3.
+- `FORECAST` command and `[forecast]` (off by default): a background thread caches the NWS forecast; the
+  command reads only the cache and labels old data `STALE`.
+- `[federation]` (off by default): pull-based federation of selected public boards between trusted
+  gardens over HMAC-authenticated HTTP; imported posts show as `@origin/tag`, local hide always wins,
+  `mgarden federation status|hide|unhide`. Migration 23. See docs/federation.md.
+- `[feeds]` (off by default): RSS/Atom items from https feeds imported into NEWS as plain text, deduplicated,
+  expiring, size- and redirect-bounded; DOCTYPE/ENTITY documents rejected. Migration 20 adds `news_imports`.
+- `mgarden setup`: interactive and `--non-interactive` config wizard (serial candidates from the
+  filesystem, optional second instance with shared `bbs_path`, collision/alias detection, previewed
+  and validated TOML, backup of a replaced file, atomic `0600` write).
+- `mgarden health-report` and `[health]`: aggregate-only operator health digest with deltas, daily
+  local-day file with bounded history, and optional SMTP email (off by default).
+- Operator information commands: `[[commands.info]]` defines fixed-text commands (name, aliases, help,
+  response, `scope = "dm"|"channel"`, `enabled`), validated against built-in words, the unlock word and
+  the byte budget, and listed under `MENU MORE` / `HELP <word>`.
+- `FIND <query>` (opt-in via `[find] enabled = true`): at most 3 matches from visible guestbook notes,
+  plus LAB boards for unlocked senders (never on the public channel). Mail, aliases, positions and
+  games are never searched.
+- `mgarden upgrade-check`: rehearses an upgrade on snapshots of the main and shared
+  BBS databases (live files opened read-only, never modified), runs integrity,
+  foreign-key and application checks, reports reply routes whose mail id now
+  belongs to another recipient, and verifies the newest backup. The 1.11.x
+  shared-BBS repairs are now versioned `bbs.user_version` migrations (v2); files
+  already repaired by 1.11.2 are recognised and only bumped.
+
 ## [1.11.2] - 2026-10-19
 
 ### Fixed

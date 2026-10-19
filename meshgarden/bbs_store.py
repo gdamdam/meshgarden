@@ -19,7 +19,12 @@ from contextlib import contextmanager
 from meshgarden.booktrivia import book_key, puzzle_for
 from meshgarden.wordle import player_key
 
-BBS_SCHEMA_VERSION = 1
+# bbs.user_version: 1 = 1.11.0 split layout, 2 = sequence/reply-route repair
+# applied (1.11.2), 3 = board unread cursors, 4 = linked identities. A fresh
+# split is created at the base version and walks
+# BBS_MIGRATIONS in the same call, so it lands at BBS_SCHEMA_VERSION.
+BBS_BASE_VERSION = 1
+BBS_SCHEMA_VERSION = 4
 
 BBS_TABLES: tuple[str, ...] = (
     "guestbook",
@@ -30,6 +35,11 @@ BBS_TABLES: tuple[str, ...] = (
     "mail_reply_routes",
     "update_cursors",
     "update_pending",
+    "board_cursors",
+    "board_cursor_pending",
+    "identity_links",
+    "identity_challenges",
+    "identity_audit",
     "wordle_state",
     "wordle_daily",
     "book_state",
@@ -51,6 +61,11 @@ NODE_ID_COLUMNS: dict[str, tuple[str, ...]] = {
     "mail_reply_routes": ("sender_node_id", "recipient_node_id"),
     "update_cursors": ("node_id",),
     "update_pending": ("node_id",),
+    "board_cursors": ("node_id",),
+    "board_cursor_pending": ("node_id",),
+    "identity_links": ("node_id", "account_id"),
+    "identity_challenges": ("node_id",),
+    "identity_audit": ("node_id", "account_id"),
     "lab_nodes": ("node_id",),
     "blocked_senders": ("node_id",),
 }
@@ -136,7 +151,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             raise RuntimeError(f"cannot rewrite DDL for {type_} {name}: {sql[:60]!r}")
         conn.execute(rewritten)
     conn.execute("CREATE TABLE bbs.bbs_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    conn.execute(f"PRAGMA bbs.user_version = {BBS_SCHEMA_VERSION}")
+    conn.execute(f"PRAGMA bbs.user_version = {BBS_BASE_VERSION}")
 
 
 def _instance_id(conn: sqlite3.Connection) -> str:
@@ -374,7 +389,7 @@ def ensure_split(conn: sqlite3.Connection, transport: str, salt: str = "") -> No
                     conn.execute(f"DROP VIEW IF EXISTS main.{view}")
             conn.execute(f"DROP TABLE main.{table}")
     with _immediate(conn):
-        _repair_1_11_0_split(conn, transport, salt, instance_id, moved_now=set(pending))
+        _run_bbs_migrations(conn, transport, salt, instance_id, moved_now=set(pending))
 
 
 def _meta_get(conn: sqlite3.Connection, key: str) -> str | None:
@@ -386,15 +401,65 @@ def _meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute("INSERT OR REPLACE INTO bbs.bbs_meta(key, value) VALUES (?, ?)", (key, value))
 
 
-def _repair_1_11_0_split(
-    conn: sqlite3.Connection, transport: str, salt: str, instance_id: str, moved_now: set[str]
-) -> None:
-    """One-time repairs for a bbs.db split by 1.11.0, which neither carried
-    an emptied table's id sequence nor re-keyed MeshCore game state. A file
-    split by this version needs neither, and records them as done."""
+def _migrate_v2_sequences(conn: sqlite3.Connection, instance_id: str) -> None:
+    """v2: lift sequences above referenced ids and repoint hijacked routes."""
+    # A file already repaired by 1.11.2 carries the marker but still has
+    # user_version 1: recognise it and only bump, never run the repair twice.
     if _meta_get(conn, "repair:sequences") is None:
         _repair_sequences(conn)
         _meta_set(conn, "repair:sequences", instance_id)
+
+
+# (target bbs.user_version, step). Each step is idempotent and runs inside
+# the caller's lock together with its version bump.
+def _migrate_v3_board_cursors(conn: sqlite3.Connection, instance_id: str) -> None:
+    """v3: unread-board cursors for files split before they existed. A fresh
+    split already copied them from main's DDL, hence IF NOT EXISTS."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS bbs.board_cursors (node_id TEXT NOT NULL, "
+        "board TEXT NOT NULL, last_read_id INTEGER NOT NULL, updated_at INTEGER NOT NULL, "
+        "PRIMARY KEY(node_id, board))"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS bbs.board_cursor_pending (node_id TEXT NOT NULL, "
+        "packet_id INTEGER NOT NULL, board TEXT NOT NULL, high_id INTEGER NOT NULL, "
+        "created_at INTEGER NOT NULL, PRIMARY KEY(node_id, packet_id, board))"
+    )
+
+
+def _migrate_v4_identities(conn: sqlite3.Connection, instance_id: str) -> None:
+    """v4: linked-identity tables (accounts.SCHEMA_SQL) for files split
+    before they existed; a fresh split already copied them from main."""
+    from meshgarden.accounts import SCHEMA_SQL
+
+    # Comments first: they may contain ";".
+    for statement in re.sub(r"--[^\n]*", "", SCHEMA_SQL).split(";"):
+        body = statement.strip()
+        if not body:
+            continue
+        body = re.sub(r"^CREATE (TABLE|INDEX) ", r"CREATE \1 IF NOT EXISTS bbs.", body)
+        conn.execute(body)
+
+
+BBS_MIGRATIONS = [
+    (2, _migrate_v2_sequences),
+    (3, _migrate_v3_board_cursors),
+    (4, _migrate_v4_identities),
+]
+
+
+def _run_bbs_migrations(
+    conn: sqlite3.Connection, transport: str, salt: str, instance_id: str, moved_now: set[str]
+) -> None:
+    """Versioned repairs for the shared file (1.11.0 split fixes), plus the
+    per-instance rekey, which depends on which instance moved the rows and so
+    keeps its own marker rather than a file-wide version."""
+    current = conn.execute("PRAGMA bbs.user_version").fetchone()[0]
+    for version, step in BBS_MIGRATIONS:
+        if version > current:
+            step(conn, instance_id)
+            conn.execute(f"PRAGMA bbs.user_version = {version}")
+            current = version
     rekey_mark = f"repair:rekey:{instance_id}"
     if transport != "meshcore" or _meta_get(conn, rekey_mark) is not None:
         return

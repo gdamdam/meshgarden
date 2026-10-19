@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from meshgarden import bbs_store
+from meshgarden import bbs_store, database
 from meshgarden.bbs_store import BBS_TABLES, SplitConflict
 from meshgarden.config import ServiceConfig
 from meshgarden.database import SCHEMA_VERSION, connect, migrate
@@ -56,7 +56,7 @@ def test_fresh_install_creates_bbs_tables_and_main_has_none(paths):
     assert set(BBS_TABLES) & _names(conn, "main") == set()
     assert "book_stats_alltime" in _names(conn, "bbs", "view")
     assert "book_stats_alltime" not in _names(conn, "main", "view")
-    assert conn.execute("PRAGMA bbs.user_version").fetchone()[0] == 1
+    assert conn.execute("PRAGMA bbs.user_version").fetchone()[0] == bbs_store.BBS_SCHEMA_VERSION
     # Observatory tables stay per-instance.
     assert "nodes" in _names(conn, "main")
 
@@ -151,7 +151,7 @@ def test_unqualified_queries_hit_bbs_after_split(paths):
 def test_no_bbs_path_keeps_single_file_mode(paths):
     main_path, _ = paths
     conn = connect(main_path)
-    assert migrate(conn) == SCHEMA_VERSION == 19
+    assert migrate(conn) == SCHEMA_VERSION == database.MIGRATIONS[-1][0]
     assert not bbs_store.is_attached(conn)
     assert set(BBS_TABLES) <= _names(conn, "main")
 
@@ -241,6 +241,7 @@ def _as_split_by_1_11_0(conn):
     mail sequence."""
     conn.execute("DELETE FROM bbs.bbs_meta WHERE key LIKE 'repair:%'")
     conn.execute("DELETE FROM bbs.sqlite_sequence WHERE name = 'mail'")
+    conn.execute("PRAGMA bbs.user_version = 1")
     conn.commit()
 
 

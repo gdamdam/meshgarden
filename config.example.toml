@@ -127,6 +127,9 @@ max_topics = 50
 mail_pending_limit = 5
 # Expose MAIL/INBOX/REPLY outside LAB; recipients still must send MAIL ON.
 mail_public = true
+# LINK/UNLINK: let a person join their MeshCore and Meshtastic radios into one BBS account
+# (shared mail, LAB, games). Off by default; requires database.bbs_path on both instances.
+identity_linking = false
 # Operator-configured word that unlocks the LAB tier (POST/READ/BOARDS, plus MAIL/REPLY when mail_public=false) for the node that DMs it, one time. "" (default) means the tier is off entirely. Never logged, echoed, or printed by CLI/doctor output.
 lab_unlock_word = ""
 
@@ -240,3 +243,72 @@ poll_interval_seconds = 120
 max_sends_per_hour = 6
 # Local hour (service.timezone) for a daily "feed is alive" line; -1 = off.
 heartbeat_hour = -1
+
+# --- Operator information commands (optional) ---------------------------------
+# Fixed-text commands. Words may not be built-in commands or the lab_unlock_word.
+# Replies are truncated to the radio's text budget (MeshCore may be 120 bytes).
+# [[commands.info]]
+# name = "WIFI"
+# aliases = ["PASSWORD"]
+# help = "Garden wifi info"
+# response = "Network: garden / pass: sprout"
+# scope = "dm"        # "channel" also needs service.mode = "channel"
+# enabled = true
+
+# --- FIND <text> (optional, off by default) -----------------------------------
+# [find]
+# enabled = true
+
+# --- FORECAST (optional, off by default; NWS api.weather.gov is the one provider) ---
+# [forecast]
+# enabled = true
+# latitude = 37.77          # defaults to [observatory] latitude/longitude when set
+# longitude = -122.42
+# units = "us"              # or "si"
+# refresh_interval_seconds = 3600   # minimum 600
+# contact = "you@example.org"       # required; goes in the User-Agent
+
+# --- RSS/Atom to NEWS (optional, off by default; https feeds only) -------------
+# [feeds]
+# enabled = true
+# urls = ["https://example.org/feed.xml"]
+# contact = "you@example.org"       # required; goes in the User-Agent
+# poll_interval_seconds = 3600      # minimum 900
+# max_items_per_feed = 5
+# item_expiry_days = 7
+# max_stored_items = 50
+
+# --- Operator health digest (optional, off by default) ------------------------
+# Aggregate counts only (no message text or node ids). One report per local day
+# in <database dir>/health/. Email needs every SMTP field; the password is read
+# from a file, never stored here.
+# [health]
+# enabled = true
+# hour = 7
+# history_days = 14
+# email_enabled = false
+# smtp_host = "smtp.example.org"
+# smtp_port = 587
+# smtp_starttls = true
+# smtp_username = "garden"
+# smtp_password_file = "/etc/meshgarden/smtp-password"
+# email_from = "garden@example.org"
+# email_to = ["operator@example.org"]
+
+# --- Federated public boards (optional, off by default) -----------------------
+# See docs/federation.md. Secrets live in files (>= 32 bytes), never inline.
+# [federation]
+# enabled = true
+# origin_id = "my-garden"          # [a-z0-9-]{3,24}
+# listen_host = "127.0.0.1"        # put a TLS reverse proxy in front for other hosts
+# listen_port = 8766
+# boards = ["chat"]                # exported to and imported from peers
+# poll_interval_seconds = 300      # min 60
+# batch_size = 50                  # max 200
+# max_stored_per_peer = 2000
+# timeout_seconds = 10
+#
+# [[federation.peers]]
+# origin_id = "north-garden"
+# url = "https://north.example.org/"
+# secret_file = "/etc/meshgarden/federation-north.secret"

@@ -646,6 +646,8 @@ def parse_command(
         ):
             return ParsedCommand(Command.CMD_HELP, arg_upper)
         return ParsedCommand(Command.MENU, arg)
+    if upper == "BOARDS" and rest.strip().upper() == "NEW":
+        return ParsedCommand(Command.BOARDS, "NEW")
     if upper in _BARE_COMMANDS:
         mesh = _MESH_SUFFIXES.get(rest.strip().upper()) if mesh_suffix else None
         if mesh is not None and _BARE_COMMANDS[upper] in _MESH_SUFFIX_COMMANDS:
@@ -1293,8 +1295,8 @@ _HELP_USAGE: dict[str, str] = {
     "WX": "WX\nStatus of the #wx-bay NWS alert feed\nWarnings and Watches, 9 Bay Area counties",
     "PING": "PING\nquick signal check\nSNR · hops · direct or relay · PKI",
     "POST": "POST <topic> <msg>\npost to a topic wall\n100 chars · 5 per day",
-    "READ": "READ <topic> [page]\nread a topic wall\nlatest 3 per page",
-    "BOARDS": "BOARDS\nlist topic walls by post count",
+    "READ": "READ <topic> [page|NEW]\nread a topic wall\nlatest 3 per page · NEW unread",
+    "BOARDS": "BOARDS [NEW]\nlist topic walls by post count\nNEW: unread per board",
     "MAIL": (
         "MAIL <node|@alias> <msg>\nMAIL ON/OFF · MAIL checks notes\n"
         "MAIL ALIAS <name|OFF>"

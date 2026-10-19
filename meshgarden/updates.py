@@ -72,8 +72,15 @@ def remember(conn, node_id, packet_id, snapshot, now):
         )
 
 
-def settle(conn: sqlite3.Connection, now: int, max_age: int, *, local_id=lambda node_id: node_id):
-    """`local_id` maps a stored (possibly mesh-qualified) id to this daemon's
+def settle(
+    conn: sqlite3.Connection, now: int, max_age: int, *, local_id=lambda node_id: node_id,
+    cursor_id=lambda node_id: node_id,
+):
+    """Pending rows are keyed by the radio identity that asked, because the
+    ack lives in that radio's request log; `cursor_id` maps it to the reader
+    whose cursor advances (its linked account, see accounts.py).
+
+    `local_id` maps a stored (possibly mesh-qualified) id to this daemon's
     bare request-log id, or None for the other mesh's row: update_pending
     may be shared, while processed_requests is this daemon's own, so a
     foreign row has no state here and must be left for its own daemon."""
@@ -89,8 +96,9 @@ def settle(conn: sqlite3.Connection, now: int, max_age: int, *, local_id=lambda 
             ).fetchone()
             state = req["state"] if req else None
             if state == "acked":
+                reader = cursor_id(row["node_id"])
                 old = conn.execute(
-                    "SELECT snapshot FROM update_cursors WHERE node_id=?", (row["node_id"],)
+                    "SELECT snapshot FROM update_cursors WHERE node_id=?", (reader,)
                 ).fetchone()
                 merged = json.loads(old[0]) if old else {}
                 for key, value in json.loads(row["snapshot"]).items():
@@ -98,7 +106,7 @@ def settle(conn: sqlite3.Connection, now: int, max_age: int, *, local_id=lambda 
                 conn.execute(
                     "INSERT INTO update_cursors VALUES (?,?,?) ON CONFLICT(node_id) "
                     "DO UPDATE SET snapshot=excluded.snapshot,updated_at=excluded.updated_at",
-                    (row["node_id"], json.dumps(merged), now),
+                    (reader, json.dumps(merged), now),
                 )
             elif (
                 state not in ("failed", "dropped", "expired", "unknown", None)
