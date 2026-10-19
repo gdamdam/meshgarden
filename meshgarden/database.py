@@ -18,10 +18,11 @@ from meshgarden.community import NEWS_SQL
 from meshgarden.federation import FEDERATION_SQL
 from meshgarden.feeds import NEWS_IMPORTS_SQL
 from meshgarden.mail import MAIL_ALIASES_SQL, REPLY_ROUTES_SQL
+from meshgarden.mail_notify import SCHEMA_SQL as MAIL_NOTIFY_SQL
 from meshgarden.updates import SCHEMA_SQL as UPDATES_SQL
 from meshgarden.usefulness import SCHEMA_SQL as USEFULNESS_SQL
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 MIGRATION_1_SQL = """
 CREATE TABLE nodes (
@@ -443,6 +444,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (21, BOARD_CURSORS_SQL),
     (22, IDENTITY_SQL),
     (23, FEDERATION_SQL),
+    (24, MAIL_NOTIFY_SQL),
 ]
 
 

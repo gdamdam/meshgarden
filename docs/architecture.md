@@ -126,6 +126,11 @@ hold. See [security-and-privacy.md](security-and-privacy.md) for the privacy sid
   SQLite or the transport. It queues `WeatherBatch` objects, the DB worker's `WeatherLedger`
   decides, and the daemon enqueues an ordinary `ReplyJob` with the garden's own node id as
   `request_sender` and `Command.WEATHER` on the `processed_requests` row.
+- **Mail notices (opt-in).** `Daemon._check_mail_notify` (the DB worker's maintenance tick) sends a
+  radio that opted in with `MAIL NOTIFY ON` one DM when new mail waits for it, bounded by an
+  interval and a daily cap (`meshgarden/mail_notify.py`). Each is an ordinary `ReplyJob` addressed
+  to that radio, logged in `processed_requests` as `MAIL_NOTIFY`; each daemon notifies only radios
+  on its own mesh.
 - **`REPEATER` (request-driven).** After an eligible request reserves its reply, the first request
   starts one background guest login and status request to the single configured full public key and
   replies that the query is in progress. Later requests read a bounded cache. Concurrent requests

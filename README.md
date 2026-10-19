@@ -108,6 +108,7 @@ name, which anyone can fake, so every mail command needs a DM.
 | `MAIL ON` / `MAIL OFF` | Opt in or out of receiving |
 | `MAIL` / `INBOX` | Collect pending notes |
 | `MAIL ALIAS [name \| OFF]` | Show, claim, or release your alias |
+| `MAIL NOTIFY ON` / `OFF` | Get a short DM on this radio when notes arrive (count only, max 6/day) |
 | `REPLY #<id> <msg>` | Reply to a collected note |
 | `LINK` / `LINK <code>` / `UNLINK` | Opt-in (`identity_linking`): join your MeshCore and Meshtastic radios so they share one mailbox, LAB unlock and game state |
 

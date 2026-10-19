@@ -73,6 +73,7 @@ from meshgarden import (
     federation,
     feeds,
     health_report,
+    mail_notify,
     moderation,
     modules,
     ops,
@@ -4117,6 +4118,10 @@ class Daemon:
         if arg.upper() in ("ON", "OFF"):
             self._handle_mail_pref(sender_node_id, arg.upper() == "ON", obs, now)
             return
+        words = arg.upper().split()
+        if words in (["NOTIFY", "ON"], ["NOTIFY", "OFF"]):
+            self._handle_mail_notify_pref(sender_node_id, words[1] == "ON", obs, now)
+            return
         alias_parts = arg.split(None, 1)
         if alias_parts[0].upper() == "ALIAS":
             self._handle_mail_alias(
@@ -4201,6 +4206,66 @@ class Daemon:
         sent = self._reserve_and_send(sender_node_id, obs, now, body)
         outcome = "accepted" if sent else "queue_full"
         self._metrics.commands_total.labels(Command.MAIL.value, outcome).inc()
+
+    def _handle_mail_notify_pref(
+        self, sender_node_id: str, enabled: bool, obs: IncomingPacket, now: int
+    ) -> None:
+        """MAIL NOTIFY ON/OFF: per-radio opt-in to mail notices. Keyed by
+        this radio's own identity: each linked radio opts in separately."""
+        if not self.cfg.service.mail_notify_enabled:
+            body = "📬 Mail notices are off on this garden.\nCheck with MAIL or NEW."
+        else:
+            mail_notify.set_enabled(
+                self._db_conn, self._bbs_identity(sender_node_id), enabled, now,
+                mailbox=self._bbs_id(sender_node_id),
+            )
+            if not enabled:
+                body = "📬 Mail notices OFF\nCheck with MAIL or NEW."
+            else:
+                cap = self.cfg.service.mail_notify_daily_cap
+                body = f"📬 Mail notices ON\nA DM when notes arrive, max {cap}/day."
+                if not self._mail_prefs.get(self._bbs_id(sender_node_id)):
+                    body += "\nAlso send MAIL ON to receive notes."
+        body = truncate_utf8(body, self._transport.max_text_bytes)
+        sent = self._reserve_and_send(sender_node_id, obs, now, body)
+        self._metrics.commands_total.labels(
+            Command.MAIL.value, "accepted" if sent else "queue_full").inc()
+
+    def _check_mail_notify(self, now: int) -> None:
+        """Maintenance tick (DB worker): send owed mail notices through the
+        central Sender, one ordinary DM job each, like any reply."""
+        if not self.cfg.service.mail_notify_enabled:
+            return
+        day = local_day(now, self.cfg.service.timezone)
+        for stored, pending, newest in mail_notify.due(
+            self._db_conn, mailbox_of=self._account_id, now=now, day=day,
+            interval_seconds=self.cfg.service.mail_notify_interval_seconds,
+            daily_cap=self.cfg.service.mail_notify_daily_cap,
+        ):
+            local = self._bbs_local(stored)
+            if local is None or self._is_blocked(self._db_conn, local):
+                continue
+            digest = hashlib.sha256(f"mailnotify|{stored}|{newest}|{now}".encode()).digest()
+            packet_id = int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+            if not self._db_request_log.claim(local, packet_id, now, Command.MAIL_NOTIFY):
+                continue
+            self._db_request_log.set_state(local, packet_id, "queued", now)
+            job = ReplyJob(
+                request_sender=local,
+                request_packet_id=packet_id,
+                request_received_at=now,
+                deadline_monotonic=self._clock.monotonic() + self.cfg.service.reply_ttl_seconds,
+                body=truncate_utf8(mail_notify.notice_text(pending),
+                                   self._transport.max_text_bytes),
+                reply_queue_key=f"mailnotify:{local}",
+            )
+            reason = self._sender.enqueue(job)
+            if reason is not None:
+                self._db_request_log.set_state(
+                    local, packet_id, "dropped", now, reason=reason.value)
+                continue
+            mail_notify.record_sent(self._db_conn, stored, newest, now, day)
+            self._metrics.commands_total.labels(Command.MAIL_NOTIFY.value, "accepted").inc()
 
     def _handle_mail_alias(
         self, sender_node_id: str, argument: str, obs: IncomingPacket, now: int
@@ -4618,6 +4683,8 @@ class Daemon:
             if pruned:
                 log.info("weather: pruned %d expired alert row(s)", pruned)
             self._maybe_send_weather_heartbeat(now)
+        if getattr(self, "_sender", None) is not None:
+            self._check_mail_notify(now)
         aged = self._retention.age_stale_submitted(now, self.cfg.service.ack_timeout_seconds)
         if aged:
             self._metrics.replies_total.labels("unknown").inc(aged)

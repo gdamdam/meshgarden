@@ -9,6 +9,14 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+### Added
+
+- `MAIL NOTIFY ON|OFF`: a radio that opts in gets one short DM, `📬 N notes waiting`, when new mail
+  arrives for it (count only, never sender or text), at most every 30 minutes and 6 times a local
+  day. Works across meshes: a note sent from Meshtastic notifies the recipient's MeshCore radio.
+  Operator settings `[service] mail_notify_enabled` (default on), `mail_notify_interval_seconds`,
+  `mail_notify_daily_cap`. Migration 24 adds the per-instance `mail_notify` table.
+
 ## [1.12.4] - 2026-10-19
 
 ### Changed

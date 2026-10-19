@@ -121,6 +121,12 @@ seen_enabled = true
 daily_post_quota = 5
 # Maximum MAIL <node|@alias> <msg> sends per node per local day; the first further send gets a throttled private reset-time notice (bounded "mail_quota" outcome).
 daily_mail_quota = 3
+# MAIL NOTIFY ON: a radio that opted in gets a short "N notes waiting" DM when new mail arrives
+# (count only, never sender or text). Operator switch; each visitor still opts in per radio.
+mail_notify_enabled = true
+# At most one notice per radio per interval (min 600), and this many per local day (1-24).
+mail_notify_interval_seconds = 1800
+mail_notify_daily_cap = 6
 # Maximum distinct board topics that may ever be created (including hidden/moderated ones); a POST creating a brand-new topic beyond this cap is silently dropped, but posting to an existing topic is never capped by this.
 max_topics = 50
 # Maximum undelivered notes held per recipient; a MAIL send beyond this is silently not stored (the sender still gets the same neutral acknowledgement).

@@ -73,6 +73,12 @@ info and forwarded traffic on its own schedule. What Meshgarden itself originate
 documented.
 
 - **Replies.** On both transports, an audited reply to an eligible request.
+- **Mail notices (opt-in per radio).** A radio that sent `MAIL NOTIFY ON` gets one short DM,
+  `📬 N notes waiting`, when a note newer than its last notice arrives: at most one per
+  `mail_notify_interval_seconds` (default 30 min) and `mail_notify_daily_cap` (default 6) a local
+  day. It carries a count only, never the sender or any text, goes through the same `Sender` path
+  as a reply, and is never retried after a loss (the note itself stays in the mailbox). The
+  operator can turn the feature off with `[service] mail_notify_enabled = false`.
 - **MeshCore flood advert (MeshCore only).** Meshgarden sends a flood self-advertisement once on
   every successful connection and then every `[radio] meshcore_advert_interval_seconds` (default 4
   hours; `0` disables only the repeat). On real hardware the garden was unreachable until it had

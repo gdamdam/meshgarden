@@ -90,6 +90,9 @@ Notes:
 | `daily_sign_quota` | `3` | Max new `SIGN` entries per node per local day |
 | `daily_post_quota` | `5` | Max new `POST`s per node per local day |
 | `daily_mail_quota` | `3` | Max `MAIL` sends per node per local day |
+| `mail_notify_enabled` | `true` | Allow `MAIL NOTIFY ON`: an opted-in radio gets a short "N notes waiting" DM when mail arrives |
+| `mail_notify_interval_seconds` | `1800` | Minimum time between two notices to one radio (at least 600) |
+| `mail_notify_daily_cap` | `6` | Max notices per radio per local day (1-24) |
 | `seen_enabled` | `true` | Answer `SEEN <node>`; `false` makes it behave like an unknown command |
 | `max_topics` | `50` | Max board topics ever created, including hidden ones |
 | `mail_pending_limit` | `5` | Max undelivered notes held per recipient |

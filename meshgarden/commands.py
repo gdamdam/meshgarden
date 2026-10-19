@@ -93,6 +93,8 @@ class Command(StrEnum):
     FORECAST = "FORECAST"
     CUSTOM = "CUSTOM"
     LINK = "LINK"
+    # processed_requests label for an opt-in mail notice, never typed.
+    MAIL_NOTIFY = "MAIL_NOTIFY"
     UNKNOWN = "UNKNOWN"
     # A bookkeeping label ONLY (task 3B-3) -- `parse_command` never produces
     # it, and it is never passed to `Daemon._dispatch_command`. It exists
@@ -1316,7 +1318,7 @@ _HELP_USAGE: dict[str, str] = {
     "BOARDS": "BOARDS [NEW]\nlist topic walls by post count\nNEW: unread per board",
     "MAIL": (
         "MAIL <node|@alias> <msg>\nMAIL ON/OFF · MAIL checks notes\n"
-        "MAIL ALIAS <name|OFF>"
+        "MAIL ALIAS <name|OFF>\nMAIL NOTIFY ON/OFF: DM on new notes"
     ),
     "HELP": "HELP <cmd> (or ? <cmd>)\nusage for a single command",
 }

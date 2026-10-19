@@ -82,6 +82,7 @@ COMMANDS: tuple[str, ...] = (
     "FORECAST",
     "CUSTOM",
     "LINK",
+    "MAIL_NOTIFY",
     "UNKNOWN",
     "KNOCK",
 )

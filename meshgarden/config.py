@@ -241,6 +241,12 @@ class ServiceConfig:
     identity_linking: bool = False
     daily_post_quota: int = 5
     daily_mail_quota: int = 3
+    # MAIL NOTIFY: a radio that opted in gets a short "N notes waiting" DM
+    # when new mail arrives (meshgarden/mail_notify.py). The operator switch
+    # is on by default; each visitor still opts in per radio.
+    mail_notify_enabled: bool = True
+    mail_notify_interval_seconds: int = 1800
+    mail_notify_daily_cap: int = 6
     max_topics: int = 50
     mail_pending_limit: int = 5
     mail_public: bool = True
@@ -765,6 +771,14 @@ def _parse_service(table: dict) -> ServiceConfig:
         raise ConfigError("service.identity_linking must be a bool")
     _require_int_at_least(kwargs["daily_post_quota"], 0, "service", "daily_post_quota")
     _require_int_at_least(kwargs["daily_mail_quota"], 0, "service", "daily_mail_quota")
+    if not isinstance(kwargs["mail_notify_enabled"], bool):
+        raise ConfigError("service.mail_notify_enabled must be a bool")
+    _require_int_at_least(
+        kwargs["mail_notify_interval_seconds"], 600, "service", "mail_notify_interval_seconds"
+    )
+    _require_int_in_range(
+        kwargs["mail_notify_daily_cap"], 1, 24, "service", "mail_notify_daily_cap"
+    )
     _require_int_at_least(kwargs["max_topics"], 1, "service", "max_topics")
     _require_int_at_least(kwargs["mail_pending_limit"], 1, "service", "mail_pending_limit")
 
