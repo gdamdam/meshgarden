@@ -321,6 +321,27 @@ def mesh_switcher(path: str, selected: str, options: tuple[tuple[str, str], ...]
     return f'<p class="muted">Mesh: {" &middot; ".join(bits)}</p>'
 
 
+_HREF_RE = re.compile(r'href="(/[^"?#]*)(\?[^"#]*)?"')
+# Pages that ignore `mesh` (BBS + JSON); their links stay untouched.
+_MESH_AGNOSTIC = ("/guestbook", "/boards", "/api/")
+
+
+def propagate_mesh(page: str, code: str) -> str:
+    """Adds `mesh=<code>` to the page's internal links so following a link
+    (nav, pagination, node profiles) stays on the selected mesh. `code` must
+    be a whitelisted value, so it needs no escaping."""
+
+    def add(m: re.Match[str]) -> str:
+        path, query = m.group(1), m.group(2)
+        if path.startswith(_MESH_AGNOSTIC):
+            return m.group(0)
+        # `&amp;` because the query is already inside an HTML attribute.
+        joined = f"{query}&amp;mesh={code}" if query else f"?mesh={code}"
+        return f'href="{path}{joined}"'
+
+    return _HREF_RE.sub(add, page)
+
+
 def main_of(page: bytes) -> str:
     """The <main> contents of a page `layout` rendered; "" if absent."""
     m = _MAIN_RE.search(page.decode("utf-8"))

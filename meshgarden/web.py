@@ -2322,6 +2322,13 @@ def _peer_cfg(cfg: Config) -> Config | None:
     peer_path = cfg.database.peer_path
     if not peer_path or not os.path.isfile(peer_path):
         return None
+    try:
+        # A file that exists but is not a readable database (half-written,
+        # corrupt) counts as unavailable. DatabaseError, not just
+        # OperationalError: "file is not a database" is the former.
+        connect(peer_path, read_only=True).close()
+    except sqlite3.DatabaseError:
+        return None
     peer_transport = "meshtastic" if cfg.radio.transport == "meshcore" else "meshcore"
     return replace(
         cfg,
@@ -2405,6 +2412,10 @@ def _mesh_page(
             f"<h2>{tpl.esc(label)}</h2>\n{tpl.main_of(page)}" for label, page in pages
         )
         body = tpl.with_main(body, stacked)
+    own_code = _MESH_CODES.get(cfg.radio.transport, "mt")
+    if selected != own_code:
+        text = tpl.propagate_mesh(body.decode("utf-8"), selected)
+        body = text.encode("utf-8")
     if peer is not None:
         switcher = tpl.mesh_switcher(path, selected, _MESH_OPTIONS)
         body = tpl.with_main(body, switcher + "\n" + tpl.main_of(body))

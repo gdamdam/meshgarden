@@ -1795,3 +1795,53 @@ def test_invalid_mesh_param_falls_back(tmp_path):
     solo = _mesh_cfg(tmp_path / "solo", with_peer=False)
     status, text = _page(solo, "/nodes", {"mesh": ["mc"]})
     assert status == 200 and "Abcd" in text
+
+
+def test_mesh_selection_propagates_into_links(tmp_path):
+    cfg = _mesh_cfg(tmp_path, with_peer=True)
+    _, text = _page(cfg, "/nodes", {"mesh": ["mc"]})
+    assert f'href="/nodes/{PEER_NODE}?mesh=mc"' in text
+    assert 'href="/map?mesh=mc"' in text or 'href="/map?mesh=mc&amp;' in text
+    assert 'href="/guestbook?mesh=mc"' not in text
+    # Own mesh is the default: links stay as they were.
+    _, own = _page(cfg, "/nodes")
+    assert 'href="/map"' in own and 'href="/nodes"' in own
+
+
+def test_nodes_pagination_keeps_mesh(tmp_path):
+    cfg = _mesh_cfg(tmp_path, with_peer=True)
+    conn = connect(cfg.database.peer_path)
+    try:
+        now = int(time.time())
+        for i in range(60):
+            conn.execute(
+                "INSERT INTO nodes (node_id, short_name, observed_first_seen, "
+                "observed_last_seen, observation_count) VALUES (?, 'p', ?, ?, 1)",
+                (f"!{i + 1:08x}", now, now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    _, text = _page(cfg, "/nodes", {"mesh": ["mc"]})
+    assert 'href="/nodes?page=2&amp;mesh=mc"' in text
+
+
+def test_corrupt_peer_file_falls_back_to_own_mesh(tmp_path):
+    cfg = _mesh_cfg(tmp_path, with_peer=False)
+    bad = tmp_path / "peer.db"
+    bad.write_bytes(os.urandom(4096))
+    cfg = replace(cfg, database=replace(cfg.database, peer_path=str(bad)))
+    for value in ("mc", "both"):
+        status, text = _page(cfg, "/nodes", {"mesh": [value]})
+        assert status == 200 and "Abcd" in text
+        assert "?mesh=" not in text
+
+
+def test_both_has_no_duplicate_ids(tmp_path):
+    cfg = _mesh_cfg(tmp_path, with_peer=True)
+    import re
+    for path in ("/map", "/topology", "/propagation"):
+        status, text = _page(cfg, path, {"mesh": ["both"]})
+        assert status == 200
+        ids = re.findall(r'\sid="([^"]*)"', text)
+        assert len(ids) == len(set(ids))
