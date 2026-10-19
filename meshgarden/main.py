@@ -166,6 +166,7 @@ from meshgarden.guestbook import (
     format_storage_full,
     format_unsign_hidden,
     format_unsign_nothing,
+    lookup_bbs_node_name,
     lookup_node_name,
     validate_topic,
 )
@@ -684,7 +685,8 @@ class Daemon:
         # and the one-time uncertain-state resolution, plus the handle
         # exposed publicly (tests, and later the CLI) for direct reads.
         # Never touched by either worker thread.
-        self.conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+        self.conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
         migrate(self.conn, transport=cfg.radio.transport)
         # Maintenance can run in operator/tests without starting worker
         # threads. The DB worker replaces this with its thread-owned helper
@@ -1628,7 +1630,8 @@ class Daemon:
         """Owns its own connection end to end: opened here, closed here.
         Never touched by any other thread."""
         self._db_conn = connect(
-            self.cfg.database.path, bbs_path=self.cfg.database.resolved_bbs_path
+            self.cfg.database.path, bbs_path=self.cfg.database.resolved_bbs_path,
+            transport=self.cfg.radio.transport,
         )
         self._db_conn_owner_ident = threading.get_ident()
         try:
@@ -4500,7 +4503,8 @@ class Daemon:
         """Owns its own connection end to end: opened here, closed here.
         Never touched by any other thread."""
         self._tx_conn = connect(
-            self.cfg.database.path, bbs_path=self.cfg.database.resolved_bbs_path
+            self.cfg.database.path, bbs_path=self.cfg.database.resolved_bbs_path,
+            transport=self.cfg.radio.transport,
         )
         self._tx_conn_owner_ident = threading.get_ident()
         try:
@@ -4566,7 +4570,8 @@ def _connect_readonly_or_report(cfg: Config) -> sqlite3.Connection | None:
     look like a daemon that simply hasn't observed anything yet. Returns
     None (after printing the bounded error to stderr) instead."""
     try:
-        return connect(cfg.database.path, read_only=True, bbs_path=cfg.database.resolved_bbs_path)
+        return connect(cfg.database.path, read_only=True, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     except sqlite3.OperationalError:
         print(f"error: database not found: {cfg.database.path}", file=sys.stderr)
         return None
@@ -4677,6 +4682,11 @@ def _invalid_limit(limit: int) -> bool:
     return not (_MIN_LIST_LIMIT <= limit <= _MAX_LIST_LIMIT)
 
 
+def _cli_bbs_node_label(conn: sqlite3.Connection, stored: str) -> str:
+    name = lookup_bbs_node_name(conn, stored)
+    return f"{name} ({stored})" if name else stored
+
+
 def _cli_node_label(conn: sqlite3.Connection, node_id: str) -> str:
     name = lookup_node_name(conn, node_id)
     return f"{name} ({node_id})" if name else node_id
@@ -4781,7 +4791,8 @@ def cmd_guestbook_hide(cfg: Config, entry_id: int, *, topic: str | None = None) 
     """`topic` is a guard (ruling 9): `entry_id` must belong to that topic
     (or, if omitted, must be a main-guestbook entry) or the command refuses
     with an error and does nothing."""
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         row = conn.execute("SELECT topic FROM guestbook WHERE entry_id=?", (entry_id,)).fetchone()
@@ -4802,7 +4813,8 @@ def cmd_guestbook_hide(cfg: Config, entry_id: int, *, topic: str | None = None) 
 
 def cmd_guestbook_delete(cfg: Config, entry_id: int, *, topic: str | None = None) -> int:
     """Same topic guard as `cmd_guestbook_hide` (ruling 9)."""
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         row = conn.execute("SELECT topic FROM guestbook WHERE entry_id=?", (entry_id,)).fetchone()
@@ -4827,7 +4839,8 @@ def cmd_block(cfg: Config, node_id: str) -> int:
         print(f"invalid node id: {node_id!r}", file=sys.stderr)
         return 2
     node_id = parsed
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         now = int(time.time())
@@ -4837,7 +4850,7 @@ def cmd_block(cfg: Config, node_id: str) -> int:
                 "ON CONFLICT(node_id) DO NOTHING",
                 (node_id, now),
             )
-        print(f"blocked: {_cli_node_label(conn, node_id)}")
+        print(f"blocked: {_cli_bbs_node_label(conn, node_id)}")
         return 0
     finally:
         conn.close()
@@ -4849,16 +4862,17 @@ def cmd_unblock(cfg: Config, node_id: str) -> int:
         print(f"invalid node id: {node_id!r}", file=sys.stderr)
         return 2
     node_id = parsed
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         with conn:
             cur = conn.execute("DELETE FROM blocked_senders WHERE node_id=?", (node_id,))
             deleted = cur.rowcount
         if deleted == 0:
-            print(f"not blocked: {_cli_node_label(conn, node_id)}", file=sys.stderr)
+            print(f"not blocked: {_cli_bbs_node_label(conn, node_id)}", file=sys.stderr)
             return 3
-        print(f"unblocked: {_cli_node_label(conn, node_id)}")
+        print(f"unblocked: {_cli_bbs_node_label(conn, node_id)}")
         return 0
     finally:
         conn.close()
@@ -4985,7 +4999,8 @@ def cmd_radio_watchdog(cfg: Config) -> int:
 
 
 def cmd_backup(cfg: Config) -> int:
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         retention = Retention(conn, cfg.retention, cfg.backup, log_dir=_log_dir_for(cfg))
@@ -5430,6 +5445,7 @@ def main(argv: list[str] | None = None) -> int:
                 cfg.database.path,
                 read_only=readonly,
                 bbs_path=cfg.database.resolved_bbs_path,
+                transport=cfg.radio.transport,
             )
             try:
                 now = int(time.time())

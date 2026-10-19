@@ -87,7 +87,7 @@ def _export_rows(
     rows = conn.execute(
         "SELECT entry_id, created_at, sender_node_id, display_name, message, "
         "visible, moderation_reason, nodes.short_name, nodes.long_name FROM guestbook "
-        f"LEFT JOIN nodes ON nodes.node_id=guestbook.sender_node_id {where}"
+        f"LEFT JOIN nodes ON nodes.node_id=bbs_local_id(guestbook.sender_node_id) {where}"
         "ORDER BY entry_id ASC",
         (topic,),
     ).fetchall()

@@ -1697,3 +1697,31 @@ def test_meshcore_lab_unlock_qualified(shared_meshcore_daemon):
     assert [tuple(r) for r in d.conn.execute("SELECT node_id, enabled FROM mail_prefs")] == [
         ("mc:" + VISITOR_NODE_ID, 1)
     ]
+
+
+def _seed_name_spoof(conn, entries):
+    conn.execute("INSERT INTO nodes(node_id, short_name, long_name, observed_first_seen, "
+                 "observed_last_seen) VALUES ('!a1d3db88', 'Evil', 'Evil', 0, 0)")
+    for sender, name, text in entries:
+        conn.execute(
+            "INSERT INTO guestbook(created_at, sender_node_id, display_name, message, "
+            "message_hash, visible) VALUES (0, ?, ?, ?, ?, 1)", (sender, name, text, text))
+    conn.commit()
+
+
+def test_meshcore_guestbook_never_names_a_meshtastic_entry_from_its_nodes(
+    shared_meshcore_daemon,
+):
+    """`nodes` here is MeshCore's: its `!a1d3db88` is not the Meshtastic
+    signer with that bare id, so the stored snapshot name must be shown."""
+    d, ft = shared_meshcore_daemon
+    d.conn.execute("INSERT INTO nodes(node_id, short_name, long_name, observed_first_seen, "
+                   "observed_last_seen) VALUES ('!c0ffee00', 'Carol', 'Carol', 0, 0)")
+    _seed_name_spoof(d.conn, [("!a1d3db88", "Alice", "hi from alice"),
+                              ("mc:!c0ffee00", "old", "hi from carol")])
+    ft.fake.emit_new_contact(VISITOR_PUBKEY, "visitor")
+    ft.fake.emit_direct_message(VISITOR_PUBKEY[:12], "GUESTBOOK")
+    d.drain()
+    reply = ft.fake.sent[-1]["msg"]
+    assert "Alice" in reply and "Evil" not in reply
+    assert "Carol" in reply  # this mesh's own entry still gets its current name

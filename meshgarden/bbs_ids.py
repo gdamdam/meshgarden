@@ -42,6 +42,25 @@ def local_or_none(stored: str, transport: str) -> str | None:
     return bare if owner == transport else None
 
 
+# SQL function every `database.connect` connection carries: this daemon's
+# bare `nodes` id for a stored BBS id, or NULL for the other mesh's. Name
+# lookups join `nodes` through it, because `nodes` is per-instance: the same
+# bare id in it is a different node on the other mesh, and a MeshCore id is
+# cheap to forge into any Meshtastic one.
+LOCAL_ID_SQL = "bbs_local_id"
+
+
+def register_local_id_sql(conn, transport: str, *, shared: bool) -> None:
+    """Install `LOCAL_ID_SQL` on `conn`. Without a shared bbs file every
+    stored id is this mesh's own (bare) one, so it is the identity."""
+    def local_id(stored):
+        if stored is None or not shared:
+            return stored
+        return local_or_none(stored, transport)
+
+    conn.create_function(LOCAL_ID_SQL, 1, local_id, deterministic=True)
+
+
 def has_transport_prefix(text: str) -> bool:
     return text.strip()[:3].lower() in _PREFIX_TRANSPORT
 

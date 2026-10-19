@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING
 
 from meshgarden import bbs_ids, digest, ops, positions
 from meshgarden.fortune import local_iso
-from meshgarden.guestbook import clean_display_name, fallback_display_name, lookup_node_name
+from meshgarden.guestbook import (
+    clean_display_name,
+    fallback_display_name,
+    lookup_bbs_node_name,
+    lookup_node_name,
+)
 
 if TYPE_CHECKING:
     from meshgarden.config import Config
@@ -51,6 +56,12 @@ def _node_label(conn, node_id: str) -> str:
     """Human label retaining the stable node id for operator decisions."""
     name = lookup_node_name(conn, node_id)
     return f"{name} ({node_id})" if name else node_id
+
+
+def _bbs_node_label(conn, stored: str) -> str:
+    """`_node_label` for an id stored in a BBS table (mail, aliases, LAB)."""
+    name = lookup_bbs_node_name(conn, stored)
+    return f"{name} ({stored})" if name else stored
 
 
 def _quota_node_label(conn, node_id: str) -> str:
@@ -117,7 +128,8 @@ def _connect_readonly_or_report(cfg: Config):
     from meshgarden.database import connect
 
     try:
-        return connect(cfg.database.path, read_only=True, bbs_path=cfg.database.resolved_bbs_path)
+        return connect(cfg.database.path, read_only=True, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     except sqlite3.OperationalError:
         print(f"error: database not found: {cfg.database.path}", file=sys.stderr)
         return None
@@ -271,7 +283,7 @@ def cmd_guestbook_review(cfg: Config, *, limit: int = 10, topic: str | None = No
             "SELECT entry_id, created_at, sender_node_id, display_name, message, "
             "moderation_reason, nodes.short_name AS current_short_name, "
             "nodes.long_name AS current_long_name FROM guestbook "
-            "LEFT JOIN nodes ON nodes.node_id=guestbook.sender_node_id "
+            "LEFT JOIN nodes ON nodes.node_id=bbs_local_id(guestbook.sender_node_id) "
             "WHERE visible=0 AND moderation_reason IS NOT NULL AND topic IS ? "
             "ORDER BY entry_id DESC LIMIT ?",
             (topic, limit),
@@ -348,7 +360,8 @@ def cmd_guestbook_approve(cfg: Config, entry_id: int, *, topic: str | None = Non
     from meshgarden.database import connect, migrate
     from meshgarden.guestbook import Guestbook
 
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         row = conn.execute(
@@ -428,7 +441,7 @@ def cmd_mail(cfg: Config, *, reveal: bool = False, as_json: bool = False) -> int
         else:
             print(f"pending: {total_pending}")
             for r in rows:
-                print(f"  {_node_label(conn, r['recipient_node_id'])}: {r['n']}")
+                print(f"  {_bbs_node_label(conn, r['recipient_node_id'])}: {r['n']}")
             print(f"hidden: {total_hidden}")
             if reveal:
                 notes = conn.execute(
@@ -439,8 +452,8 @@ def cmd_mail(cfg: Config, *, reveal: bool = False, as_json: bool = False) -> int
                     when = local_iso(n["created_at"], cfg.service.timezone)
                     tag = f" [hidden: {n['moderation_reason']}]" if n["hidden"] else ""
                     print(
-                        f"#{n['id']} {when}  {_node_label(conn, n['sender_node_id'])} -> "
-                        f"{_node_label(conn, n['recipient_node_id'])}{tag}: {n['message']}"
+                        f"#{n['id']} {when}  {_bbs_node_label(conn, n['sender_node_id'])} -> "
+                        f"{_bbs_node_label(conn, n['recipient_node_id'])}{tag}: {n['message']}"
                     )
         return 0
     finally:
@@ -459,10 +472,11 @@ def cmd_mail_purge(cfg: Config, node_id: str) -> int:
         return 2
     node_id = parsed
 
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
-        label = _quota_node_label(conn, node_id)
+        label = _bbs_node_label(conn, node_id)
         with conn:
             cur = conn.execute("DELETE FROM mail WHERE recipient_node_id=?", (node_id,))
         print(f"purged: {cur.rowcount} note(s) for {label}")
@@ -483,7 +497,7 @@ def cmd_mail_alias_list(cfg: Config, *, as_json: bool = False) -> int:
             print(json.dumps([dict(row) for row in rows]))
         else:
             for row in rows:
-                print(f"@{row['alias']} -> {_node_label(conn, row['node_id'])}")
+                print(f"@{row['alias']} -> {_bbs_node_label(conn, row['node_id'])}")
             if not rows:
                 print("no active mail aliases")
         return 0
@@ -501,7 +515,8 @@ def cmd_mail_alias_set(
     if parsed is None:
         print(f"invalid node id: {node_id!r}", file=sys.stderr)
         return 2
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         status = MailAliases(conn).operator_set(
@@ -520,7 +535,7 @@ def cmd_mail_alias_set(
 
         normalized = normalize_mail_alias(alias, allow_at=False)
         assert normalized is not None
-        print(f"alias set: @{normalized} -> {_node_label(conn, parsed)}")
+        print(f"alias set: @{normalized} -> {_bbs_node_label(conn, parsed)}")
         return 0
     finally:
         conn.close()
@@ -534,7 +549,8 @@ def cmd_mail_alias_release(cfg: Config, alias: str) -> int:
     if normalized is None:
         print("invalid alias", file=sys.stderr)
         return 2
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         if not MailAliases(conn).operator_release(normalized, int(time.time())):
@@ -562,7 +578,7 @@ def cmd_lab(cfg: Config, *, as_json: bool = False) -> int:
         rows = conn.execute(
             "SELECT node_id, unlocked_at FROM lab_nodes ORDER BY unlocked_at"
         ).fetchall()
-        labels = {r["node_id"]: _node_label(conn, r["node_id"]) for r in rows}
+        labels = {r["node_id"]: _bbs_node_label(conn, r["node_id"]) for r in rows}
     finally:
         conn.close()
 
@@ -678,7 +694,8 @@ def cmd_positions_delete(
         print("--from must not be after --to", file=sys.stderr)
         return 2
 
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         deleted = positions.delete_dm_positions(
@@ -705,10 +722,11 @@ def cmd_lab_revoke(cfg: Config, node_id: str) -> int:
         return 2
     node_id = parsed
 
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
-        label = _node_label(conn, node_id)
+        label = _bbs_node_label(conn, node_id)
         with conn:
             cur = conn.execute("DELETE FROM lab_nodes WHERE node_id=?", (node_id,))
         if cur.rowcount:
@@ -752,7 +770,8 @@ def cmd_quota_reset(
 
     day = day or local_day(int(time.time()), cfg.service.timezone)
 
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         resolved, matches = _resolve_quota_node(conn, node_id)
@@ -798,7 +817,8 @@ def cmd_quota_reset_all(cfg: Config) -> int:
     """
     from meshgarden.database import connect, migrate
 
-    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path)
+    conn = connect(cfg.database.path, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     try:
         migrate(conn, transport=cfg.radio.transport)
         with conn:

@@ -159,3 +159,19 @@ def test_cross_mesh_mail_send_to_mc_prefix(shared_daemon):
     assert rows == [("!aabbccdd", "mc:!ffeeddcc", "hello other mesh")]
     # The bare id is this mesh's node, a different mailbox.
     assert Mail(d.conn).pending_count("!ffeeddcc") == 0
+
+
+def test_meshtastic_guestbook_never_names_an_mc_entry_from_its_nodes(shared_daemon):
+    d = shared_daemon
+    d.conn.execute("INSERT INTO nodes(node_id, short_name, long_name, observed_first_seen, "
+                   "observed_last_seen) VALUES ('!a1d3db88', 'Evil', 'Evil', 0, 0)")
+    d.conn.execute(
+        "INSERT INTO guestbook(created_at, sender_node_id, display_name, message, "
+        "message_hash, visible) VALUES (0, 'mc:!a1d3db88', 'Alice', 'hi', 'h', 1)")
+    d.conn.commit()
+    _dm(d, "GUESTBOOK", 9504)
+    reply = d.iface.sent[-1]["text"]
+    assert "Alice" in reply and "Evil" not in reply
+    from meshgarden.guestbook import lookup_bbs_node_name
+    assert lookup_bbs_node_name(d.conn, "mc:!a1d3db88") is None
+    assert lookup_bbs_node_name(d.conn, "!a1d3db88") == "Evil"

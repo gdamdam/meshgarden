@@ -51,7 +51,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
-from meshgarden import __version__
+from meshgarden import __version__, bbs_ids
 from meshgarden import web_templates as tpl
 from meshgarden.booktrivia import book_stats_summary
 from meshgarden.collector import (
@@ -173,10 +173,12 @@ def _ro_connect(cfg: Config) -> sqlite3.Connection:
     started) an empty in-memory database with the same schema, so every
     page renders as "empty" instead of erroring."""
     try:
-        return connect(cfg.database.path, read_only=True, bbs_path=cfg.database.resolved_bbs_path)
+        return connect(cfg.database.path, read_only=True, bbs_path=cfg.database.resolved_bbs_path,
+        transport=cfg.radio.transport)
     except sqlite3.OperationalError:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
+        bbs_ids.register_local_id_sql(conn, cfg.radio.transport, shared=False)
         migrate(conn)
         return conn
 

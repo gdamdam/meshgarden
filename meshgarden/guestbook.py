@@ -190,7 +190,7 @@ class Guestbook:
             "SELECT entry_id, created_at, sender_node_id, display_name, message, visible, "
             "moderation_reason, topic, nodes.short_name AS current_short_name, "
             "nodes.long_name AS current_long_name FROM guestbook "
-            "LEFT JOIN nodes ON nodes.node_id=guestbook.sender_node_id "
+            "LEFT JOIN nodes ON nodes.node_id=bbs_local_id(guestbook.sender_node_id) "
             "WHERE visible=1 AND topic IS ? "
             "ORDER BY entry_id DESC LIMIT ?",
             (topic, limit),
@@ -209,7 +209,7 @@ class Guestbook:
             "SELECT entry_id, created_at, sender_node_id, display_name, message, visible, "
             "moderation_reason, topic, nodes.short_name AS current_short_name, "
             "nodes.long_name AS current_long_name FROM guestbook "
-            "LEFT JOIN nodes ON nodes.node_id=guestbook.sender_node_id "
+            "LEFT JOIN nodes ON nodes.node_id=bbs_local_id(guestbook.sender_node_id) "
             "WHERE visible=1 AND topic IS ? "
             "ORDER BY entry_id DESC LIMIT ? OFFSET ?",
             (topic, per_page, offset),
@@ -229,7 +229,7 @@ class Guestbook:
             "SELECT entry_id, created_at, sender_node_id, display_name, message, visible, "
             "moderation_reason, topic, nodes.short_name AS current_short_name, "
             "nodes.long_name AS current_long_name FROM guestbook "
-            "LEFT JOIN nodes ON nodes.node_id=guestbook.sender_node_id "
+            "LEFT JOIN nodes ON nodes.node_id=bbs_local_id(guestbook.sender_node_id) "
             "WHERE visible=1 AND entry_id=? AND topic IS ?",
             (entry_id, topic),
         ).fetchone()
@@ -247,7 +247,8 @@ class Guestbook:
             "SELECT entry_id, created_at, sender_node_id, display_name, message, visible, "
             f"moderation_reason, topic, nodes.short_name AS current_short_name, "
             "nodes.long_name AS current_long_name FROM guestbook "
-            f"LEFT JOIN nodes ON nodes.node_id=guestbook.sender_node_id WHERE {where}"
+            "LEFT JOIN nodes ON nodes.node_id=bbs_local_id(guestbook.sender_node_id) "
+            f"WHERE {where}"
             "ORDER BY entry_id DESC LIMIT ?",
             (topic, limit),
         ).fetchall()
@@ -402,10 +403,19 @@ def lookup_node_name(conn: sqlite3.Connection, node_id: str | None) -> str | Non
     """Latest known display name; labels never replace IDs for identity decisions."""
     if node_id is None:
         return None
-    # The nodes table holds bare ids; a shared-BBS id carries a mesh prefix.
     row = conn.execute(
-        "SELECT short_name, long_name FROM nodes WHERE node_id=?",
-        (node_id.removeprefix(MESHCORE_PREFIX),),
+        "SELECT short_name, long_name FROM nodes WHERE node_id=?", (node_id,)
+    ).fetchone()
+    return clean_display_name(row["short_name"], row["long_name"]) if row else None
+
+
+def lookup_bbs_node_name(conn: sqlite3.Connection, stored: str | None) -> str | None:
+    """`lookup_node_name` for an id stored in a BBS table: the other mesh's
+    ids get no name (see `bbs_ids.LOCAL_ID_SQL`)."""
+    if stored is None:
+        return None
+    row = conn.execute(
+        "SELECT short_name, long_name FROM nodes WHERE node_id=bbs_local_id(?)", (stored,)
     ).fetchone()
     return clean_display_name(row["short_name"], row["long_name"]) if row else None
 

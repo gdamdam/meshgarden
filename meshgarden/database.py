@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import sqlite3
 
-from meshgarden import bbs_store
+from meshgarden import bbs_ids, bbs_store
 from meshgarden.community import NEWS_SQL
 from meshgarden.mail import MAIL_ALIASES_SQL, REPLY_ROUTES_SQL
 from meshgarden.updates import SCHEMA_SQL as UPDATES_SQL
@@ -434,7 +434,11 @@ def _ensure_private_parent(path: str) -> None:
 
 
 def connect(
-    path: str, *, read_only: bool = False, bbs_path: str | None = None
+    path: str,
+    *,
+    read_only: bool = False,
+    bbs_path: str | None = None,
+    transport: str = "meshtastic",
 ) -> sqlite3.Connection:
     """Open a connection with WAL mode and the pragmas the daemon and CLI both need.
 
@@ -451,6 +455,8 @@ def connect(
     `bbs_path` attaches the shared BBS file as schema `bbs` (see bbs_store);
     None keeps the legacy single-file layout. A read-only attach of a
     missing file raises sqlite3.OperationalError, same as a missing main.
+    `transport` is the config's own mesh, which decides which stored BBS ids
+    `bbs_ids.LOCAL_ID_SQL` maps onto this file's `nodes`.
     """
     if read_only:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -486,6 +492,7 @@ def connect(
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA temp_store=MEMORY")
+    bbs_ids.register_local_id_sql(conn, transport, shared=bool(bbs_path))
     return conn
 
 
