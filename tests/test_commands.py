@@ -1608,3 +1608,12 @@ def test_parse_seen_suffix_needs_a_node():
     lone = parse_command("SEEN MC")
     assert (lone.argument, lone.mesh) == ("MC", None)
     assert parse_command("SEEN bob").mesh is None
+
+
+def test_mesh_suffix_is_inert_without_a_peer():
+    """No peer_path: WHO/GARDEN/RECORD/SEEN parse as they did before the suffix."""
+    for text in ("WHO MC", "GARDEN MT", "RECORD MC"):
+        assert parse_command(text, mesh_suffix=False).command is Command.UNKNOWN
+        assert parse_command(text).mesh is not None
+    p = parse_command("SEEN alice MT", mesh_suffix=False)
+    assert (p.command, p.argument, p.mesh) == (Command.SEEN, "alice MT", None)

@@ -210,6 +210,12 @@ peer_path = "/var/lib/meshgarden/observatory.db"
 - **Watchdog.** `meshgarden-watchdog@.service` / `.timer` are per-instance copies of the radio
   watchdog using `/etc/meshgarden/%i.toml`; install and enable like the default watchdog:
   `sudo systemctl enable --now meshgarden-watchdog@mt.timer`.
+- **Restart before CLI writes.** After adding `bbs_path` to a config, restart that daemon before
+  running writing CLI commands (`mgarden backup`, `block`, ...): otherwise the CLI performs the
+  split under the running daemon.
+- **Keep retention identical.** Keep `retention.mail_expiry_days`, guestbook expiry and
+  `service.timezone` the same on every instance: each daemon prunes the shared tables with its
+  own settings, so the shorter one wins.
 - **Backups and restore.** Back up both instances; the BBS is in `bbs.db`. Stop both daemons
   before restoring `bbs.db`.
 - **Rollback.** Once the split has happened, rolling back to 1.x requires restoring the

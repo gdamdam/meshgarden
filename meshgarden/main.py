@@ -1901,7 +1901,12 @@ class Daemon:
         `_process_meshcore_inbound` (MeshCore) so the two receive paths can
         never quietly diverge on which commands a locked/disabled tier
         rewrites to UNKNOWN."""
-        parsed = parse_command(command_text, lab_unlock_word=self.cfg.service.lab_unlock_word)
+        parsed = parse_command(
+            command_text,
+            lab_unlock_word=self.cfg.service.lab_unlock_word,
+            # Without a peer observatory the MC/MT suffix stays ordinary text.
+            mesh_suffix=bool(self.cfg.database.peer_path),
+        )
         if parsed.command is Command.POSITION and not self.cfg.observatory.dm_position_capture:
             # Off by default: a location share is ordinary silent text
             # unless the operator opted in, and must not claim a dedup or
@@ -2859,7 +2864,7 @@ class Daemon:
             shared_with = None
             if self.cfg.database.resolved_bbs_path is not None:
                 shared_with = _MESH_LABELS[self._peer_transport_name()]
-            return info_text(self.cfg.service.name, shared_with)
+            return info_text(self.cfg.service.name, shared_with, self._transport.max_text_bytes)
         if command == Command.STATS:
             return format_stats(
                 senders_24h=self._collector.distinct_senders_since(now - 86400),

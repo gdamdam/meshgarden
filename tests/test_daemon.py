@@ -186,6 +186,17 @@ def test_info_names_the_other_mesh_only_when_shared():
     assert b(big) == 180 and "uptime" in big
 
 
+def test_info_keeps_the_disclaimer_within_a_120_byte_transport():
+    for shared in (None, "MeshCore", "Meshtastic"):
+        for name in ("Meshgarden Guestbook", "X" * 400):
+            t = info_text(name, shared, 120)
+            assert b(t) <= 120
+            assert "not for emergencies" in t
+    # Roomy budget unchanged: shared line present, default budget identical.
+    assert "Shared with" in info_text("Garden", "MeshCore", 180)
+    assert info_text("Garden") == info_text("Garden", None, 180)
+
+
 def test_info_truncates_only_the_name_when_the_name_is_huge():
     t = info_text("X" * 400)
     assert b(t) <= 180

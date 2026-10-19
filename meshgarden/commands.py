@@ -487,11 +487,16 @@ def position_ack_text(kind: str, lat: float, lon: float) -> str:
     return f"📍 {kind} position saved · {lat:.4f}, {lon:.4f}"
 
 
-def parse_command(text: str, *, lab_unlock_word: str = "") -> ParsedCommand:
+def parse_command(
+    text: str, *, lab_unlock_word: str = "", mesh_suffix: bool = True
+) -> ParsedCommand:
     """Commands are case-insensitive, exact matches -- no prefix matching, so
     e.g. `MENUS` is `UNKNOWN`. `MENU` and `?` are aliases for the same menu
     command; bare `HELP`, `SOS`, and `EMERGENCY` are aliases for
     `NOT_EMERGENCY`, the fixed non-emergency disclaimer.
+
+    `mesh_suffix=False` (no `peer_path` configured) makes a trailing MC/MT
+    inert: WHO/GARDEN/RECORD/SEEN parse exactly as before the suffix existed.
 
     `lab_unlock_word` (default `""`, meaning the LAB tier is off -- see
     config.py's `service.lab_unlock_word`) is checked FIRST, before every
@@ -587,7 +592,9 @@ def parse_command(text: str, *, lab_unlock_word: str = "") -> ParsedCommand:
         # Needs a node before the suffix: a lone `SEEN MC` is a node named
         # "MC", exactly as it parsed before the suffix existed.
         words = argument.rsplit(None, 1)
-        mesh = _MESH_SUFFIXES.get(words[1].upper()) if len(words) == 2 else None
+        mesh = (
+            _MESH_SUFFIXES.get(words[1].upper()) if mesh_suffix and len(words) == 2 else None
+        )
         if mesh is not None:
             return ParsedCommand(Command.SEEN, words[0].strip(), mesh=mesh)
         return ParsedCommand(Command.SEEN, argument)
@@ -610,7 +617,7 @@ def parse_command(text: str, *, lab_unlock_word: str = "") -> ParsedCommand:
             return ParsedCommand(Command.CMD_HELP, arg_upper)
         return ParsedCommand(Command.MENU, arg)
     if upper in _BARE_COMMANDS:
-        mesh = _MESH_SUFFIXES.get(rest.strip().upper())
+        mesh = _MESH_SUFFIXES.get(rest.strip().upper()) if mesh_suffix else None
         if mesh is not None and _BARE_COMMANDS[upper] in _MESH_SUFFIX_COMMANDS:
             return ParsedCommand(_BARE_COMMANDS[upper], "", mesh=mesh)
         if rest:
@@ -1098,10 +1105,21 @@ _INFO_SUFFIX = (
     "⚠️ experimental · not for emergencies · no uptime guarantee"
 )
 
+# Same lines minus "· no uptime guarantee", for transports whose text budget
+# (MeshCore: 120 bytes) cannot hold the full suffix plus a service name.
+_INFO_SUFFIX_COMPACT = (
+    " 🌷\n"
+    "📝 SIGN <msg> publishes\n"
+    "❓ MENU for commands\n"
+    "⚠️ experimental · not for emergencies"
+)
+
 # Leading seedling emoji shared by MENU and INFO (4 UTF-8 bytes + a space).
 _GARDEN_EMOJI_PREFIX = "🌱 "
 
 _MAX_RESPONSE_BYTES = 180
+# Shortest service name worth showing before INFO drops its shared line.
+_MIN_INFO_NAME_BYTES = 8
 
 
 def _truncate_utf8(text: str, max_bytes: int) -> str:
@@ -1354,7 +1372,11 @@ def knock_text() -> str:
     return _KNOCK_TEXT
 
 
-def info_text(service_name: str, shared_with: str | None = None) -> str:
+def info_text(
+    service_name: str,
+    shared_with: str | None = None,
+    max_bytes: int = _MAX_RESPONSE_BYTES,
+) -> str:
     """<= 180 UTF-8 bytes, multi-line. Names the operator-configured service,
     states that SIGN publishes, points to MENU for the full command list,
     and carries the experimental/no-emergency/no-uptime disclaimer --
@@ -1367,17 +1389,25 @@ def info_text(service_name: str, shared_with: str | None = None) -> str:
     `shared_with` (the OTHER mesh's label, only when a shared bbs file is in
     use) adds one line before the disclaimer, so visitors learn their posts
     and mail are readable from the other mesh; the name budget shrinks to
-    match."""
+    match. `max_bytes` is the transport's text budget: the disclaimer always
+    survives, so the shared line is dropped when the budget cannot hold it
+    plus a minimal name (the name is ellipsized first)."""
+    prefix_bytes = len(_GARDEN_EMOJI_PREFIX.encode("utf-8"))
+
+    def room(suffix: str) -> int:
+        return max_bytes - prefix_bytes - len(suffix.encode("utf-8"))
+
     suffix = _INFO_SUFFIX
     if shared_with:
         head, _, tail = suffix.rpartition("\n")
-        suffix = f"{head}\n🔗 Shared with {shared_with}\n{tail}"
-    max_name_bytes = (
-        _MAX_RESPONSE_BYTES
-        - len(_GARDEN_EMOJI_PREFIX.encode("utf-8"))
-        - len(suffix.encode("utf-8"))
-    )
-    name = _truncate_utf8(service_name, max_name_bytes)
+        shared = f"{head}\n🔗 Shared with {shared_with}\n{tail}"
+        if room(shared) >= _MIN_INFO_NAME_BYTES:
+            suffix = shared
+    if room(suffix) < _MIN_INFO_NAME_BYTES:
+        # Tight transport (MeshCore, 120 bytes): the compact suffix drops
+        # only the uptime clause, so "not for emergencies" always survives.
+        suffix = _INFO_SUFFIX_COMPACT
+    name = _truncate_utf8(service_name, max(0, room(suffix)))
     return _GARDEN_EMOJI_PREFIX + name + suffix
 
 
