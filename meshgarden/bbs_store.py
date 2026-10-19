@@ -81,10 +81,12 @@ def _immediate(conn: sqlite3.Connection):
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield
+        conn.execute("COMMIT")
     except BaseException:
-        conn.execute("ROLLBACK")
+        # COMMIT itself can fail (e.g. busy); never leave the lock held.
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
         raise
-    conn.execute("COMMIT")
 
 
 def _has(conn: sqlite3.Connection, schema: str, type_: str, name: str) -> bool:
@@ -122,7 +124,9 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     order = {"table": 0, "index": 1, "view": 2}
     for type_, name, sql in sorted(rows, key=lambda r: order.get(r[0], 3)):
         if type_ not in order:
-            continue
+            # A trigger (none exist today) would otherwise vanish from the
+            # shared schema without anyone noticing.
+            raise RuntimeError(f"BBS split cannot carry {type_} {name}")
         rewritten, n = _CREATE_RE.subn(r"\1bbs.\2\3\2", sql, count=1)
         if n != 1:
             raise RuntimeError(f"cannot rewrite DDL for {type_} {name}: {sql[:60]!r}")
@@ -171,6 +175,39 @@ def _copy_table(conn: sqlite3.Connection, table: str, transport: str) -> None:
     )
 
 
+def _conflicts(conn: sqlite3.Connection, table: str, instance_id: str) -> bool:
+    """main and bbs both hold rows for `table` and bbs's are not our own copy."""
+    moved = conn.execute(
+        "SELECT value FROM bbs.bbs_meta WHERE key = ?", (f"moved:{table}",)
+    ).fetchone()
+    if moved is not None and moved[0] == instance_id:
+        return False
+    return _count(conn, "main", table) > 0 and _count(conn, "bbs", table) > 0
+
+
+def _conflict_error(conn: sqlite3.Connection, tables: list[str]) -> SplitConflict:
+    return SplitConflict(
+        f"cannot move {', '.join(tables)} from {_db_file(conn, 'main')} into shared BBS "
+        f"file {_db_file(conn, 'bbs')}: both hold rows; only one instance "
+        "may bring existing BBS data"
+    )
+
+
+def assert_not_split(conn: sqlite3.Connection) -> None:
+    """Refuse to run single-file on a main whose BBS tables were moved out.
+
+    Without this, dropping `database.bbs_path` after a split would leave
+    every BBS command failing on a missing table (legacy migrations are
+    already at their final version, so nothing recreates them).
+    """
+    missing = [t for t in BBS_TABLES if not _has(conn, "main", "table", t)]
+    if missing:
+        raise SplitConflict(
+            f"{_db_file(conn, 'main')} was split into a shared BBS file (no "
+            f"{', '.join(missing)}); set database.bbs_path to that bbs.db"
+        )
+
+
 def ensure_split(conn: sqlite3.Connection, transport: str) -> None:
     """Create the shared BBS schema if needed and move this instance's legacy
     BBS tables into it. Idempotent and resumable after a crash at any point.
@@ -186,9 +223,15 @@ def ensure_split(conn: sqlite3.Connection, transport: str) -> None:
             _create_schema(conn)
 
     instance_id = _instance_id(conn)
-    for table in BBS_TABLES:
-        if not _has(conn, "main", "table", table):
-            continue
+    pending = [t for t in BBS_TABLES if _has(conn, "main", "table", t)]
+    # Check every table before moving any: a conflict found on a later table
+    # after earlier ones were moved and dropped would strand this instance
+    # half-merged, with the operator's "who brings the data" choice gone.
+    with _immediate(conn):
+        conflicts = [t for t in pending if _conflicts(conn, t, instance_id)]
+        if conflicts:
+            raise _conflict_error(conn, conflicts)
+    for table in pending:
         with _immediate(conn):
             moved = conn.execute(
                 "SELECT value FROM bbs.bbs_meta WHERE key = ?", (f"moved:{table}",)
@@ -198,11 +241,9 @@ def ensure_split(conn: sqlite3.Connection, transport: str) -> None:
             elif _count(conn, "main", table) == 0:
                 pass  # nothing to bring
             elif _count(conn, "bbs", table) > 0:
-                raise SplitConflict(
-                    f"cannot move {table} from {_db_file(conn, 'main')} into shared BBS "
-                    f"file {_db_file(conn, 'bbs')}: both hold rows; only one instance "
-                    "may bring existing BBS data"
-                )
+                # Re-checked under this lock: another daemon may have copied
+                # in since the pre-pass.
+                raise _conflict_error(conn, [table])
             else:
                 _copy_table(conn, table, transport)
                 conn.execute(

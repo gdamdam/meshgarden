@@ -194,3 +194,26 @@ def test_run_reports_split_conflict_without_traceback(monkeypatch, capsys):
     monkeypatch.setattr(main, "Daemon", boom)
     assert main.cmd_run(None) == 1
     assert "both hold rows" in capsys.readouterr().err
+
+
+def test_conflict_in_later_table_moves_nothing(tmp_path):
+    bbs_path = str(tmp_path / "bbs.db")
+    a, b = str(tmp_path / "a.db"), str(tmp_path / "b.db")
+    _legacy(a, blocked=["!0badf00d"])
+    _split(a, bbs_path).close()
+    # b's guestbook alone would move cleanly; only blocked_senders conflicts.
+    _legacy(b, guestbook=["!e4d495e4"], blocked=["!a1d3db88"])
+    conn = connect(b, bbs_path=bbs_path)
+    with pytest.raises(SplitConflict, match="blocked_senders"):
+        migrate(conn)
+    assert set(BBS_TABLES) <= _names(conn, "main")
+    assert conn.execute("SELECT count(*) FROM bbs.guestbook").fetchone()[0] == 0
+    assert not conn.in_transaction
+
+
+def test_split_main_without_bbs_path_refused(paths):
+    main_path, bbs_path = paths
+    _split(main_path, bbs_path).close()
+    conn = connect(main_path)
+    with pytest.raises(SplitConflict, match="database.bbs_path"):
+        migrate(conn)

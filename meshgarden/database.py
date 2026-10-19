@@ -534,4 +534,6 @@ def migrate(conn: sqlite3.Connection, *, transport: str = "meshtastic") -> int:
             current = version
     if bbs_store.is_attached(conn):
         bbs_store.ensure_split(conn, transport)
+    else:
+        bbs_store.assert_not_split(conn)
     return current
