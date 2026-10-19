@@ -123,11 +123,13 @@ from meshgarden.commands import (
     me_text,
     menu_reply_for,
     menu_text,
+    menu_with_shared_header,
     not_emergency_text,
     parse_command,
     parse_position_text,
     ping_text,
     position_ack_text,
+    quota_hint_suffix,
     record_text,
     repeater_text,
     seen_ambiguous_text,
@@ -2988,6 +2990,14 @@ class Daemon:
             ):
                 day = local_day(now, self.cfg.service.timezone)
                 used, _ = self._quota.usage(sender_node_id, day)
+                shared_with = None
+                if self.cfg.database.resolved_bbs_path is not None:
+                    shared_with = _MESH_LABELS[self._peer_transport_name()]
+                body = menu_with_shared_header(
+                    body, shared_with=shared_with, max_bytes=self._transport.max_text_bytes,
+                    reserve=len(quota_hint_suffix(
+                        used, self.cfg.service.daily_command_quota).encode("utf-8")),
+                )
                 body = with_quota_hint(
                     body,
                     used,

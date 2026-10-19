@@ -1180,6 +1180,23 @@ def _truncate_utf8(text: str, max_bytes: int) -> str:
     return ""
 
 
+def menu_with_shared_header(
+    menu: str, *, shared_with: str | None, max_bytes: int, reserve: int = 0
+) -> str:
+    """The top-level menu, its title line saying which other mesh shares
+    this BBS ("🌱 MeshGarden · shared with MeshCore"). The visitor's own
+    mesh is never named: they know which radio they are using. Added only
+    when it leaves `reserve` bytes (the quota hint) inside `max_bytes`, so
+    no menu line is ever cut for it."""
+    if not shared_with:
+        return menu
+    first, sep, rest = menu.partition("\n")
+    candidate = f"{first} · shared with {shared_with}" + sep + rest
+    if len(candidate.encode("utf-8")) + reserve <= max_bytes:
+        return candidate
+    return menu
+
+
 def menu_text(*, lab_unlocked: bool = False) -> str:
     """Top-level menu with room for the quota hint within 120 UTF-8 bytes.
 

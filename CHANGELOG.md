@@ -9,6 +9,15 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.12.3] - 2026-10-19
+
+### Changed
+
+- With a shared BBS, the top-level `MENU` title names the other mesh: `🌱 MeshGarden · shared with
+  MeshCore` on Meshtastic and `· shared with Meshtastic` on MeshCore. It is added only when it fits
+  the transport budget with the quota hint, so no menu line is cut; on MeshCore's default 120 bytes
+  the title stays `🌱 MeshGarden`.
+
 ## [1.12.2] - 2026-10-19
 
 ### Changed

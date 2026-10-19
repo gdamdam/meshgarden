@@ -1617,3 +1617,16 @@ def test_mesh_suffix_is_inert_without_a_peer():
         assert parse_command(text).mesh is not None
     p = parse_command("SEEN alice MT", mesh_suffix=False)
     assert (p.command, p.argument, p.mesh) == (Command.SEEN, "alice MT", None)
+
+
+def test_menu_shared_header_names_only_the_other_mesh_and_never_cuts_lines():
+    from meshgarden.commands import _MENU_TEXT, menu_with_shared_header
+
+    out = menu_with_shared_header(_MENU_TEXT, shared_with="MeshCore", max_bytes=180, reserve=22)
+    assert out.splitlines()[0] == "🌱 MeshGarden · shared with MeshCore"
+    assert out.splitlines()[1:] == _MENU_TEXT.splitlines()[1:]
+    assert "Meshtastic" not in out
+    assert menu_with_shared_header(_MENU_TEXT, shared_with=None, max_bytes=180) == _MENU_TEXT
+    # No room (MeshCore's 120 bytes with the quota hint): the menu is unchanged.
+    assert menu_with_shared_header(_MENU_TEXT, shared_with="Meshtastic", max_bytes=120,
+                                   reserve=22) == _MENU_TEXT

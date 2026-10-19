@@ -188,3 +188,10 @@ def test_single_file_mail_ignores_transport_prefix(daemon, monkeypatch):
     monkeypatch.setattr(bbs_ids, "typed_node_id", boom)
     _dm(daemon, "MAIL mc:!ffeeddcc hello", 9510)
     assert daemon.conn.execute("SELECT count(*) FROM mail").fetchone()[0] == 0
+
+
+def test_shared_meshtastic_menu_says_shared_with_meshcore(shared_daemon):
+    _dm(shared_daemon, "MENU", 9590)
+    text = shared_daemon.iface.sent[-1]["text"]
+    assert text.splitlines()[0] == "🌱 MeshGarden · shared with MeshCore"
+    assert "MENU DAILY" in text and "quota" in text
