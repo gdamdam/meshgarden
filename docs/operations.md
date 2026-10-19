@@ -349,7 +349,8 @@ disable channel listening. Threat model:
 ## Daily checks
 
 ```bash
-mgarden status                  # daemon up? radio connected? queue, storage, backup health
+mgarden status                  # every instance: daemon up? radio connected? queue, storage, backups
+mgarden status --meshtastic     # one instance only (or --meshcore)
 mgarden doctor                  # identity, radio device, database, disk, backups, timezone, ports
 mgarden digest                  # yesterday's aggregate summary
 mgarden requests --limit 20     # what visitors asked recently

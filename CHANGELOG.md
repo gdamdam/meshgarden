@@ -9,6 +9,14 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+### Changed
+
+- `mgarden status` now reports every instance configured beside the selected config (e.g. both
+  `/etc/meshgarden/config.toml` and `mt.toml`), each under a `== MeshCore (...)` / `== Meshtastic (...)`
+  header. `--meshcore` / `--meshtastic` show one instance. `--json` still prints a single object (the
+  selected instance, or the one the flag names), so scripts parsing it are unaffected. A single-instance
+  install prints exactly as before.
+
 ## [1.12.0] - 2026-10-19
 
 ### Added

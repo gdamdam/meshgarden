@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import glob
 import hashlib
 import json
 import logging
@@ -4923,7 +4924,51 @@ def _connect_readonly_or_report(cfg: Config) -> sqlite3.Connection | None:
         return None
 
 
-def cmd_status(cfg: Config, *, as_json: bool) -> int:
+def _status_instances(cfg: Config, config_path: str | None) -> list[tuple[str, Config]]:
+    """The selected instance plus every other instance configured beside it
+    (`*.toml` in the same directory, e.g. /etc/meshgarden/mt.toml), one per
+    database. Files that do not parse are not instances and are skipped."""
+    found = [(config_path or "", cfg)]
+    seen = {os.path.realpath(cfg.database.path)}
+    if config_path:
+        for path in sorted(glob.glob(os.path.join(os.path.dirname(config_path) or ".", "*.toml"))):
+            if os.path.realpath(path) == os.path.realpath(config_path):
+                continue
+            try:
+                other = load_config(path)
+            except (OSError, ValueError, ConfigError):
+                continue
+            db = os.path.realpath(other.database.path)
+            if db not in seen:
+                seen.add(db)
+                found.append((path, other))
+    return found
+
+
+def cmd_status(
+    cfg: Config, *, as_json: bool, config_path: str | None = None, transport: str | None = None
+) -> int:
+    """Every configured instance by default; `transport` narrows it to one
+    radio. JSON stays one object (the selected instance, or the one
+    `transport` names) so existing scripts keep parsing it."""
+    instances = _status_instances(cfg, config_path)
+    if transport is not None:
+        instances = [(p, c) for p, c in instances if c.radio.transport == transport]
+        if not instances:
+            print(f"no {_MESH_LABELS[transport]} instance configured", file=sys.stderr)
+            return 2
+    if as_json:
+        instances = instances[:1]
+    rc = 0
+    for index, (path, instance) in enumerate(instances):
+        if len(instances) > 1:
+            print(("\n" if index else "")
+                  + f"== {_MESH_LABELS[instance.radio.transport]} ({path})")
+        rc = max(rc, _print_status(instance, as_json=as_json))
+    return rc
+
+
+def _print_status(cfg: Config, *, as_json: bool) -> int:
     conn = _connect_readonly_or_report(cfg)
     if conn is None:
         return 1
@@ -5558,12 +5603,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="report daemon/observatory status",
         description=(
             "Shows whether the daemon is up and the radio is connected, plus identity, "
-            "queue depth, storage and backup health. Read-only; exits 1 if the database "
-            "is not found."
+            "queue depth, storage and backup health, for every instance configured in the "
+            "config's directory (e.g. /etc/meshgarden/*.toml); --meshcore or --meshtastic "
+            "shows one. --json prints one instance. Read-only; exits 1 if a database is "
+            "not found."
         ),
-        examples=("mgarden status", "mgarden status --json"),
+        examples=("mgarden status", "mgarden status --meshtastic", "mgarden status --json"),
     )
     status_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    status_only = status_parser.add_mutually_exclusive_group()
+    status_only.add_argument("--meshcore", dest="status_transport", action="store_const",
+                             const="meshcore", help="only the MeshCore instance")
+    status_only.add_argument("--meshtastic", dest="status_transport", action="store_const",
+                             const="meshtastic", help="only the Meshtastic instance")
 
     upgrade_check_parser = _add_command(
         sub,
@@ -5959,7 +6011,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "run":
             return cmd_run(cfg, debug=args.debug)
         if args.command == "status":
-            return cmd_status(cfg, as_json=args.json)
+            return cmd_status(cfg, as_json=args.json, config_path=config_path,
+                              transport=args.status_transport)
         if args.command == "db-stats":
             return cmd_db_stats(cfg)
         if args.command == "upgrade-check":

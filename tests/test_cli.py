@@ -1233,3 +1233,48 @@ def test_radio_watchdog_defaults_its_state_file_next_to_the_database(
     state = pathlib.Path(path).parent / "watchdog-state.json"
     assert state.exists()
     assert (state.stat().st_mode & 0o777) == 0o600
+
+
+def _second_instance(tmp_path, name="mt.toml", transport="meshcore"):
+    """A sibling instance config, like /etc/meshgarden/mt.toml beside config.toml."""
+    other = tmp_path / "second"
+    p = tmp_path / name
+    text = CONFIG.format(db=other / "o.db", bk=other / "backups")
+    if transport == "meshcore":
+        text = text.replace("[radio]\n", '[radio]\ntransport = "meshcore"\n', 1)
+    p.write_text(text)
+    conn = connect(str(other / "o.db"))
+    migrate(conn)
+    conn.close()
+    return str(p)
+
+
+def test_status_reports_every_instance_by_default(cfgfile, tmp_path, capsys):
+    path, conn = cfgfile
+    mt = _second_instance(tmp_path)
+    (tmp_path / "broken.toml").write_text("not = [valid")
+    assert main(["--config", path, "status"]) == 0
+    out = capsys.readouterr().out
+    assert f"== Meshtastic ({path})" in out and f"== MeshCore ({mt})" in out
+    assert out.count("expected_node_id") == 2
+
+
+def test_status_transport_flag_shows_one_instance(cfgfile, tmp_path, capsys):
+    path, conn = cfgfile
+    mt = _second_instance(tmp_path)
+    assert main(["--config", path, "status", "--meshcore"]) == 0
+    out = capsys.readouterr().out
+    assert "==" not in out and out.count("expected_node_id") == 1
+    assert main(["--config", path, "status", "--meshcore", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["version"]
+    assert main(["--config", mt, "status", "--meshtastic", "--json"]) == 0
+    assert "expected_node_id" in json.loads(capsys.readouterr().out)
+
+
+def test_status_json_stays_one_object_and_missing_transport_errors(cfgfile, tmp_path, capsys):
+    path, conn = cfgfile
+    _second_instance(tmp_path)
+    assert main(["--config", path, "status", "--json"]) == 0
+    assert isinstance(json.loads(capsys.readouterr().out), dict)
+    (tmp_path / "mt.toml").unlink()
+    assert main(["--config", path, "status", "--meshcore"]) == 2
