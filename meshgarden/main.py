@@ -1356,6 +1356,7 @@ class Daemon:
             "radio_connected": status.connected,
             "reply_ready": status.reply_ready,
             "actual_node_id": status.actual_node_id,
+            "node_name": self._own_node_name(),
             "expected_node_id": status.expected_node_id,
             "mismatch_reason": status.mismatch_reason,
             "last_packet_at": status.last_packet_at,
@@ -1374,6 +1375,15 @@ class Daemon:
             "contacts": dict(self._contacts_status),
             "web_status": self._web_status,
         }
+
+    def _own_node_name(self) -> str | None:
+        """The garden radio's own advertised name: MeshCore's self-info, or
+        the Meshtastic interface's local long name."""
+        info = getattr(self._meshcore_client, "self_info", None)
+        if isinstance(info, dict) and isinstance(info.get("name"), str) and info["name"]:
+            return info["name"]
+        name = getattr(self._radio, "node_name", None)
+        return name if isinstance(name, str) else None
 
     def _note_drop(self, now: int) -> None:
         """Records one rate-limit-style drop (cooldown, quota, sign_quota,
@@ -4985,6 +4995,7 @@ def _print_status(cfg: Config, *, as_json: bool) -> int:
             "radio_disconnected_seconds": None,
             "expected_node_id": cfg.radio.expected_node_id,
             "actual_node_id": None,
+            "node_name": None,
             "mismatch_reason": None,
             "uptime_seconds": None,
             "last_packet_at": None,
@@ -5006,6 +5017,7 @@ def _print_status(cfg: Config, *, as_json: bool) -> int:
                         "radio_disconnected_seconds"
                     ),
                     "actual_node_id": snapshot.get("actual_node_id"),
+                    "node_name": snapshot.get("node_name"),
                     "mismatch_reason": snapshot.get("mismatch_reason"),
                     "uptime_seconds": snapshot.get("uptime_seconds"),
                     "last_packet_at": snapshot.get("last_packet_at"),

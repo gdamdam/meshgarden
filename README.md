@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/gdamdam/meshgarden/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/gdamdam/meshgarden/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="version 1.12.0" src="https://img.shields.io/badge/version-1.12.0-blue">
+  <img alt="version 1.12.1" src="https://img.shields.io/badge/version-1.12.1-blue">
   <a href="LICENSE"><img alt="GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-green"></a>
 </p>
 

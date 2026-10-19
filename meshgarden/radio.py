@@ -408,6 +408,18 @@ class RadioAdapter:
         mi = getattr(iface, "myInfo", None) if iface is not None else None
         return mi.my_node_num if mi is not None else None
 
+    @property
+    def node_name(self) -> str | None:
+        """The connected radio's own long name, for operator status only
+        (a label, never an identity)."""
+        with self._lock:
+            iface = self._interface
+        try:
+            name = iface.getLongName() if iface is not None else None
+        except Exception:
+            return None
+        return name if isinstance(name, str) and name else None
+
     def send_text(self, *, text: str, destination_id: str) -> int | None:
         """LOW-LEVEL. Only sender.py may call this. Returns the outbound packet id.
 

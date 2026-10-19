@@ -1278,3 +1278,19 @@ def test_status_json_stays_one_object_and_missing_transport_errors(cfgfile, tmp_
     assert isinstance(json.loads(capsys.readouterr().out), dict)
     (tmp_path / "mt.toml").unlink()
     assert main(["--config", path, "status", "--meshcore"]) == 2
+
+
+def test_status_shows_the_radio_node_name(cfgfile, capsys):
+    from types import SimpleNamespace
+
+    from meshgarden.main import Daemon
+
+    mc = SimpleNamespace(_meshcore_client=SimpleNamespace(self_info={"name": "Garden MC"}),
+                         _radio=None)
+    assert Daemon._own_node_name(mc) == "Garden MC"
+    mt = SimpleNamespace(_meshcore_client=None, _radio=SimpleNamespace(node_name="Garden MT"))
+    assert Daemon._own_node_name(mt) == "Garden MT"
+    assert Daemon._own_node_name(SimpleNamespace(_meshcore_client=None, _radio=None)) is None
+    path, conn = cfgfile
+    assert main(["--config", path, "status"]) == 0
+    assert "node_name: None" in capsys.readouterr().out

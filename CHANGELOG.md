@@ -9,6 +9,8 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-10-19
+
 ### Changed
 
 - `mgarden status` now reports every instance configured beside the selected config (e.g. both
@@ -16,6 +18,8 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
   header. `--meshcore` / `--meshtastic` show one instance. `--json` still prints a single object (the
   selected instance, or the one the flag names), so scripts parsing it are unaffected. A single-instance
   install prints exactly as before.
+- `mgarden status` (and `status.json`) include `node_name`, the garden radio's own name as the
+  radio reports it (MeshCore self-info, Meshtastic local long name). A label for the operator only.
 
 ## [1.12.0] - 2026-10-19
 
