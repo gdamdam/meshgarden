@@ -256,6 +256,10 @@ repeatable hardware matrix is still incomplete for both transports.
 | [`docs/community.md`](docs/community.md) | NEW, NEWS, guides, mail replies, CHECK |
 | [`docs/TODO.md`](docs/TODO.md) | Deferred work and hardware acceptance |
 
+## How it's built
+
+Meshgarden is a free, non-commercial project, built out of love for radio. It was developed with AI coding tools; every change was designed, reviewed and tested by a human, on real hardware.
+
 ## License
 
 [GPL-3.0-only](LICENSE). Copyright (c) 2026 Meshgarden contributors.
