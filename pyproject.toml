@@ -26,7 +26,7 @@ mgarden = "meshgarden.main:main"
 meshtastic-observatory = "meshgarden.main:main"
 
 [dependency-groups]
-dev = ["pytest==9.1.1", "ruff==0.17.0"]
+dev = ["pytest==9.1.1", "ruff==0.17.1"]
 
 [build-system]
 requires = ["hatchling"]
