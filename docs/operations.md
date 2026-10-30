@@ -677,7 +677,7 @@ found. The table lists per-command exceptions.
 |---|---|---|
 | `requests [--limit N] [--json]` | Recent processed requests, newest first (default 20). | `0` ok, `1` database not found, `2` bad `--limit` |
 | `digest [--date YYYY-MM-DD] [--json]` | Aggregate-only daily digest (packets, nodes, busiest hour, signatures/held, reply outcomes, commands by type, BOOK/WORDLE solves). Default date: yesterday in `[service] timezone`. | `0` ok, `1` database not found, `2` bad `--date` |
-| `usefulness` | JSON report of how often visitors return and which commands they use. Aggregate. | `0` ok |
+| `usefulness [--reset]` | JSON report of how often visitors return and which commands they use, plus a `visitors` count that leaves out LAB-unlocked nodes. `--reset` restarts that count from now. Aggregate. | `0` ok |
 | `books [--json]` | All-time BOOK leaderboard, one row per title (shown/guesses/solves). | `0` ok, `1` database not found |
 | `wordle [--days N] [--json]` | Daily WORDLE aggregates, newest first (default 7 days: players, solves, average guesses). | `0` ok, `1` database not found |
 | `positions [--node <node-id>] [--days N] [--limit N] [--json]` | Positions visitors deliberately shared by DM (`Saved position: ...` / `GPS position: ...`), newest first. Recorded only when `[observatory] dm_position_capture = true`. | `0` ok, `1` database not found, `2` bad `--limit`/`--days` |

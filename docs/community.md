@@ -133,6 +133,12 @@ fixed suggestion, only when the match is unique.
 - command and outcome counts
 - MENU-to-useful and NEW-to-read conversion, and board use
 - stored and fully collected mail, unknown requests and errors
+- a `visitors` block: messages, senders, valid commands and guestbook signs from everyone except
+  LAB-unlocked nodes (the operator's own radios), and when the last one arrived
+
+`mgarden usefulness --reset` starts the visitor count again from now. It records the reset time
+and deletes nothing; the 90-day history and the rest of the report are unchanged. Each instance
+has its own count, so reset a second mesh with its own `--config`.
 
 NEW-to-read counts guestbook, NEWS and board reads. Inbox collection is measured separately, so
 `MAIL ON` and mail sends cannot inflate read conversion. Conversions measure accepted command use,

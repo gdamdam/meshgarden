@@ -47,7 +47,7 @@ ssh -N -L 9109:127.0.0.1:9109 you@your-meshgarden-host
 |---|---|
 | `/` | Today's counts, best SNR, last packet age, queue depth, 24-hour activity bars |
 | `/health` | Worker heartbeats, radio identity, storage and backup status, drop counts, moderation queue size |
-| `/traffic` | 24-hour per-hour table, portnum mix, top senders, MQTT/RF split |
+| `/traffic` | 24-hour per-hour table, portnum mix, top senders, MQTT/RF split, visitors (messages to the garden from non-LAB nodes since the last `mgarden usefulness --reset`) |
 | `/guestbook` | Visible entries (paginated) and the moderation queue |
 | `/boards` | Topic boards |
 | `/records` | Today, 7-day and all-time bests; book and wordle aggregates |

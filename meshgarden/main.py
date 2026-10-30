@@ -5739,14 +5739,21 @@ def build_parser() -> argparse.ArgumentParser:
             "database is not found."
         ),
     )
-    _add_command(
+    usefulness_parser = _add_command(
         sub,
         "usefulness",
         help="local JSON report of visitor return and command use",
         description=(
             "Prints a JSON report of how often visitors return and which commands they "
-            "use. Aggregate and read-only; never transmits."
+            "use. Its \"visitors\" block counts messages from everyone except LAB-unlocked "
+            "nodes since the last --reset. Aggregate; never transmits."
         ),
+        examples=("mgarden usefulness", "mgarden usefulness --reset"),
+    )
+    usefulness_parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="start the visitor count again from now (keeps the 90-day history)",
     )
     federation_parser = _add_command(
         sub,
@@ -6120,7 +6127,10 @@ def main(argv: list[str] | None = None) -> int:
             if not os.path.isfile(cfg.database.path):
                 print("database not found; start the daemon first", file=sys.stderr)
                 return 1
-            readonly = args.command == "usefulness" or args.news_command == "list"
+            readonly = (
+                (args.command == "usefulness" and not args.reset)
+                or (args.command == "news" and args.news_command == "list")
+            )
             conn = connect(
                 cfg.database.path,
                 read_only=readonly,
@@ -6130,7 +6140,11 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 now = int(time.time())
                 if args.command == "usefulness":
-                    print(json.dumps(usefulness.report(conn, now), indent=2))
+                    if args.reset:
+                        usefulness.reset_visitors(conn, now)
+                    result = usefulness.report(conn, now)
+                    result["visitors"] = usefulness.visitors(conn, now)
+                    print(json.dumps(result, indent=2))
                 elif args.news_command == "list":
                     print(json.dumps([dict(r) for r in community.list_news(conn, now)], indent=2))
                 elif args.news_command == "add":

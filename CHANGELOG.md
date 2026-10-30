@@ -9,6 +9,16 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-10-30
+
+### Added
+
+- Visitor count: how many messages reach the garden from anyone other than the operator.
+  LAB-unlocked nodes are left out, so your own testing does not hide whether strangers use it.
+  Shown on `/traffic` (messages, senders, senders in 7 days, valid commands, guestbook signs, last
+  visitor) and as a `visitors` block in `mgarden usefulness`. `mgarden usefulness --reset` restarts
+  the count from now without deleting any history.
+
 ## [1.13.3] - 2026-10-19
 
 ### Added

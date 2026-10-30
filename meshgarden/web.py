@@ -52,7 +52,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
-from meshgarden import __version__, bbs_ids
+from meshgarden import __version__, bbs_ids, usefulness
 from meshgarden import web_templates as tpl
 from meshgarden.booktrivia import book_stats_summary
 from meshgarden.collector import (
@@ -739,6 +739,9 @@ def _page_traffic(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bo
         else:
             mqtt_counts["unknown"] = r["n"]
 
+    v = usefulness.visitors(conn, now)
+    counting_from = "the last reset" if v["reset_at"] else "90 days ago"
+
     body = f"""
 <h1>Traffic</h1>
 <h2>Last 24 hours</h2>
@@ -756,6 +759,19 @@ def _page_traffic(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bo
 {tpl.stat_card("MQTT", str(mqtt_counts["MQTT"]))}
 {tpl.stat_card("RF", str(mqtt_counts["RF"]))}
 {tpl.stat_card("Unknown", str(mqtt_counts["unknown"]))}
+</div>
+
+<h2>Visitors</h2>
+<p class="muted">Messages sent to the garden since {tpl.esc(_fmt_utc(v["since"]))}
+({counting_from}), leaving out your {v["own_nodes_excluded"]} LAB-unlocked node(s). Reset with
+<code>mgarden usefulness --reset</code>.</p>
+<div class="grid">
+{tpl.stat_card("Messages", str(v["messages"]))}
+{tpl.stat_card("Senders", str(v["senders"]))}
+{tpl.stat_card("Senders (7d)", str(v["senders_7d"]))}
+{tpl.stat_card("Valid commands", str(v["commands"]))}
+{tpl.stat_card("Guestbook signs", str(v["guestbook_signs"]))}
+{tpl.stat_card("Last visitor", tpl.esc(_fmt_utc(v["last_at"]) if v["last_at"] else "never"))}
 </div>
 """
     return tpl.layout(title="Traffic", active="/traffic", body=body)

@@ -23,9 +23,12 @@ import statistics
 from collections import Counter, defaultdict
 from typing import Any
 
+from meshgarden import bbs_ids
+
 DAY_SECONDS = 86_400
 RETENTION_SECONDS = 90 * DAY_SECONDS
 RETURN_WINDOW_SECONDS = 7 * DAY_SECONDS
+VISITORS_RESET_KEY = "usefulness_visitors_reset_at"
 
 # Kept standalone so database.py can install it as one root migration.
 SCHEMA_SQL = """
@@ -385,6 +388,87 @@ def report(conn: sqlite3.Connection, now: int) -> dict[str, Any]:
         "unknown_events": commands["UNKNOWN"],
         "errors": outcomes["error"],
     }
+
+
+def _operator_keys(conn: sqlite3.Connection, secret: bytes) -> tuple[set[str], int]:
+    """Pseudonyms of LAB-unlocked nodes, i.e. the operator's own radios.
+
+    ``lab_nodes`` may live in the attached shared BBS file, where MeshCore ids
+    carry an ``mc:`` prefix that :func:`record` never sees, so both the stored
+    and the bare form are digested.
+    """
+
+    try:
+        rows = conn.execute("SELECT node_id FROM lab_nodes").fetchall()
+    except sqlite3.OperationalError:
+        return set(), 0
+    keys: set[str] = set()
+    for (stored,) in rows:
+        for node_id in {str(stored), bbs_ids.split(str(stored))[1]}:
+            keys.add(_digest(secret, "user", node_id))
+    return keys, len(rows)
+
+
+def _reset_at(conn: sqlite3.Connection) -> int | None:
+    if not _has_table(conn, "daemon_state"):
+        return None
+    row = conn.execute(
+        "SELECT value FROM daemon_state WHERE key=?", (VISITORS_RESET_KEY,)
+    ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def visitors(conn: sqlite3.Connection, now: int) -> dict[str, Any]:
+    """Messages from everyone except the operator, since the last reset.
+
+    Read-only, so the web page's read-only connection can call it.  The
+    window never reaches past the 90-day event retention.
+    """
+
+    timestamp = int(now)
+    reset_at = _reset_at(conn)
+    since = max(timestamp - RETENTION_SECONDS, reset_at or 0)
+    row = conn.execute(
+        "SELECT value FROM usefulness_meta WHERE key='identity_hmac_key'"
+    ).fetchone()
+    events: list[tuple[str, int, str]] = []
+    own_nodes = 0
+    if row is not None:
+        own, own_nodes = _operator_keys(conn, bytes(row[0]))
+        events = [
+            (str(user_key), int(at), str(command))
+            for user_key, at, command in conn.execute(
+                "SELECT user_key,occurred_at,command FROM usefulness_events "
+                "WHERE occurred_at>=? AND occurred_at<=?",
+                (since, timestamp),
+            )
+            if str(user_key) not in own
+        ]
+    recent_cutoff = timestamp - RETURN_WINDOW_SECONDS
+    return {
+        "since": since,
+        "reset_at": reset_at,
+        "messages": len(events),
+        "senders": len({event[0] for event in events}),
+        "senders_7d": len({event[0] for event in events if event[1] >= recent_cutoff}),
+        "commands": sum(event[2] not in ("UNKNOWN", "ERROR") for event in events),
+        "guestbook_signs": sum(event[2] == "SIGN" for event in events),
+        "last_at": max((event[1] for event in events), default=None),
+        "own_nodes_excluded": own_nodes,
+    }
+
+
+def reset_visitors(conn: sqlite3.Connection, now: int) -> None:
+    """Start the visitor count again from ``now``; events are kept."""
+
+    timestamp = int(now)
+    with conn:
+        conn.execute(
+            "INSERT INTO daemon_state(key, value, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET "
+            "value=excluded.value, updated_at=excluded.updated_at",
+            (VISITORS_RESET_KEY, str(timestamp), timestamp),
+        )
 
 
 def prune(conn: sqlite3.Connection, now: int) -> int:

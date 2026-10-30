@@ -311,3 +311,42 @@ def test_schema_rejects_unbounded_commands(tmp_path):
             "INSERT INTO usefulness_events VALUES ('e','u',1,?,'accepted')",
             ("X" * 33,),
         )
+
+
+def test_visitors_exclude_lab_nodes_and_count_from_reset(tmp_path):
+    conn = metrics_db(tmp_path)
+    now = 2_000_000_000
+    # A shared BBS file stores MeshCore ids with an mc: prefix that record()
+    # never sees; both stored forms must still exclude the operator.
+    conn.execute("INSERT INTO lab_nodes (node_id, unlocked_at) VALUES ('!0000aaaa', 0)")
+    conn.execute("INSERT INTO lab_nodes (node_id, unlocked_at) VALUES ('mc:!0000bbbb', 0)")
+    conn.commit()
+    usefulness.record(conn, "!0000aaaa", "MENU", now - 100)
+    usefulness.record(conn, "!0000bbbb", "SIGN", now - 90)
+    usefulness.record(conn, "!visitor1", "UNKNOWN", now - 80)
+    usefulness.record(conn, "!visitor1", "SIGN", now - 70)
+    usefulness.record(conn, "!visitor2", "MENU", now - 8 * 86_400)
+
+    result = usefulness.visitors(conn, now)
+
+    assert result["own_nodes_excluded"] == 2
+    assert result["reset_at"] is None
+    assert result["messages"] == 3
+    assert result["senders"] == 2
+    assert result["senders_7d"] == 1
+    assert result["commands"] == 2
+    assert result["guestbook_signs"] == 1
+    assert result["last_at"] == now - 70
+
+    usefulness.reset_visitors(conn, now - 75)
+    after = usefulness.visitors(conn, now)
+
+    assert after["reset_at"] == after["since"] == now - 75
+    assert (after["messages"], after["senders"], after["last_at"]) == (1, 1, now - 70)
+    assert conn.execute("SELECT COUNT(*) FROM usefulness_events").fetchone()[0] == 5
+
+
+def test_visitors_with_no_events_reports_nothing_heard(tmp_path):
+    conn = metrics_db(tmp_path)
+    result = usefulness.visitors(conn, 2_000_000_000)
+    assert (result["messages"], result["senders"], result["last_at"]) == (0, 0, None)
