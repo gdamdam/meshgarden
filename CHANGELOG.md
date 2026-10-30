@@ -9,6 +9,8 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-10-30
+
 ### Changed
 
 - Dashboard reorganized. Every page now reads title, headline numbers, then detail sections, with
