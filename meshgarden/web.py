@@ -44,6 +44,7 @@ import sqlite3
 import statistics
 import threading
 import time
+from collections import Counter
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from http import HTTPStatus
@@ -486,7 +487,7 @@ def _latest_precision_bits(conn: sqlite3.Connection) -> dict[str, int | None]:
 # ---------------------------------------------------------------------------
 
 
-def _page_now(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) -> bytes:
+def _page_now(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) -> tpl.Page:
     now = int(time.time())
     tz = cfg.service.timezone
     midnight = local_midnight(now, tz)
@@ -548,7 +549,7 @@ def _page_now(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) 
 
     last_packet_age = "n/a"
     if isinstance(last_packet_at, (int, float)):
-        last_packet_age = f"{max(0, now - int(last_packet_at))}s ago"
+        last_packet_age = f"{tpl.duration(now - int(last_packet_at))} ago"
 
     identity_line = (
         f"{tpl.esc(_node_label(conn, actual_id))} "
@@ -559,20 +560,8 @@ def _page_now(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) 
 
     outcomes_html = " · ".join(f"{name} {n}" for name, n in outcomes.items())
 
-    banner = (
-        '<div class="banner">Daemon status is stale or unavailable -- radio/queue/uptime '
-        "fields below reflect the last known state, if any.</div>"
-        if stale
-        else ""
-    )
-
-    cards = "".join(
+    reach = "".join(
         [
-            tpl.stat_card("Service", tpl.esc(cfg.service.name)),
-            tpl.stat_card("Reply ready", tpl.bool_pill_yn(reply_ready)),
-            tpl.stat_card("Nodes heard today", str(nodes_today)),
-            tpl.stat_card("Heard direct today", str(heard_direct_today)),
-            tpl.stat_card("New nodes today", str(new_nodes_today)),
             tpl.stat_card("Best SNR 24h", tpl.na(best_snr_24h, "{:+.1f} dB")),
             tpl.stat_card(
                 "Furthest direct",
@@ -590,29 +579,49 @@ def _page_now(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) 
                 if have_location and furthest_observed_incl_mqtt is not None
                 else "n/a",
             ),
-            tpl.stat_card("Last packet", last_packet_age),
+        ]
+    )
+    service = "".join(
+        [
+            tpl.stat_card("Service", tpl.esc(cfg.service.name)),
             tpl.stat_card("Queue depth", tpl.na(queue_depth)),
-            tpl.stat_card("Uptime", tpl.na(uptime, "{}s")),
-            tpl.stat_card("Guestbook entries", str(guestbook_count)),
+            tpl.stat_card("Uptime", tpl.duration(uptime)),
         ]
     )
 
-    body = f"""
-{banner}
-<h1>Right now</h1>
-<p>Identity: {identity_line}</p>
-<div class="grid">{cards}</div>
-<h2>24h activity</h2>
-{bars}
-<h2>Reply outcomes today</h2>
-<p>{tpl.esc(outcomes_html) if outcomes_html else "none"}</p>
-<p class="muted">More: <a href="/map">Map</a> &middot; <a href="/topology">Topology</a> &middot;
-<a href="/propagation">Propagation</a></p>
-"""
-    return tpl.layout(title="Right now", active="/", body=body)
+    return tpl.Page(
+        title="Right now",
+        active="/",
+        banner=(
+            "Daemon status is stale or unavailable -- radio/queue/uptime "
+            "fields below reflect the last known state, if any."
+            if stale
+            else ""
+        ),
+        summary=(
+            ("Reply ready", tpl.bool_pill_yn(reply_ready)),
+            ("Last packet", last_packet_age),
+            ("Nodes heard today", str(nodes_today)),
+            ("Heard direct today", str(heard_direct_today)),
+            ("New nodes today", str(new_nodes_today)),
+            ("Guestbook entries", str(guestbook_count)),
+        ),
+        sections=(
+            tpl.Section("24h activity", bars),
+            tpl.Section("Reach", f'<div class="grid">{reach}</div>'),
+            tpl.Section(
+                "Reply outcomes today",
+                f"<p>{tpl.esc(outcomes_html) if outcomes_html else 'none'}</p>",
+            ),
+            tpl.Section(
+                "Service",
+                f"<p>Identity: {identity_line}</p>\n<div class=\"grid\">{service}</div>",
+            ),
+        ),
+    )
 
 
-def _page_health(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) -> bytes:
+def _page_health(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) -> tpl.Page:
     workers = status.get("workers", {}) or {}
     storage = status.get("storage", {}) or {}
     drops_1h = status.get("rate_limited_drops_1h")
@@ -620,13 +629,6 @@ def _page_health(cfg: Config, conn: sqlite3.Connection, status: dict, stale: boo
     last_backup_error = status.get("last_backup_error")
     moderation_queue = _moderation_queue_count(conn)
     version = status.get("version") or __version__
-
-    banner = (
-        '<div class="banner">Status file missing or stale: the daemon may not be '
-        "running. Fields below are unknown / last-known unless noted.</div>"
-        if stale
-        else ""
-    )
 
     def _worker_row(name: str, info: dict) -> str:
         age = tpl.na(info.get("age_seconds"), "{:.1f}s")
@@ -644,50 +646,64 @@ def _page_health(cfg: Config, conn: sqlite3.Connection, status: dict, stale: boo
 
     backup_age = "n/a"
     if isinstance(last_backup_at, (int, float)) and last_backup_at:
-        backup_age = f"{int(time.time()) - int(last_backup_at)}s ago"
+        backup_age = f"{tpl.duration(int(time.time()) - int(last_backup_at))} ago"
 
-    body = f"""
-{banner}
-<h1>Health</h1>
-<h2>Workers</h2>
-<table><thead><tr><th>Worker</th><th>Heartbeat age</th><th>Status</th></tr></thead>
-<tbody>{worker_rows}</tbody></table>
+    alive = sum(1 for info in workers.values() if not info.get("stalled"))
+    workers_s = f"{alive} / {len(workers)} alive" if workers else "unknown"
 
-<h2>Radio</h2>
-<div class="grid">
-{tpl.stat_card("Connected", tpl.bool_pill_yn(status.get("radio_connected")))}
-{tpl.stat_card("Reply ready", tpl.bool_pill_yn(status.get("reply_ready")))}
+    radio = f"""<div class="grid">
 {tpl.stat_card("Actual node", tpl.esc(_node_label(conn, status.get("actual_node_id"))))}
 {tpl.stat_card("Expected node", tpl.esc(_node_label(conn, status.get("expected_node_id"))))}
 {tpl.stat_card("Mismatch", tpl.esc(status.get("mismatch_reason")) or "none")}
-</div>
-
-<h2>Storage</h2>
-<div class="grid">
+</div>"""
+    storage_html = f"""<div class="grid">
 {tpl.stat_card("Used", used_mib)}
 {tpl.stat_card("Cap", cap_mib)}
 {tpl.stat_card("Pressure", tpl.pressure_pill(storage.get("pressure")))}
-</div>
-
-<h2>Backups</h2>
-<div class="grid">
+</div>"""
+    backups = f"""<div class="grid">
 {tpl.stat_card("Last backup", backup_age)}
 {tpl.stat_card("Last backup error", tpl.esc(last_backup_error) or "none")}
-</div>
-
-<h2>Other</h2>
-<div class="grid">
+</div>"""
+    other = f"""<div class="grid">
 {tpl.stat_card("Rate-limit/quota drops (1h)", tpl.na(drops_1h))}
-{tpl.stat_card("Moderation queue", str(moderation_queue))}
 {tpl.stat_card("Version", tpl.esc(version))}
 </div>
 <p class="muted">Metrics endpoint: {tpl.esc(cfg.metrics.listen)}:{cfg.metrics.port}/metrics
-(Prometheus text format)</p>
-"""
-    return tpl.layout(title="Health", active="/health", body=body)
+(Prometheus text format)</p>"""
+
+    return tpl.Page(
+        title="Health",
+        active="/health",
+        banner=(
+            "Status file missing or stale: the daemon may not be "
+            "running. Fields below are unknown / last-known unless noted."
+            if stale
+            else ""
+        ),
+        summary=(
+            ("Connected", tpl.bool_pill_yn(status.get("radio_connected"))),
+            ("Reply ready", tpl.bool_pill_yn(status.get("reply_ready"))),
+            ("Workers", workers_s),
+            ("Storage", f"{used_mib} {tpl.pressure_pill(storage.get('pressure'))}"),
+            ("Last backup", backup_age),
+            ("Moderation queue", str(moderation_queue)),
+        ),
+        sections=(
+            tpl.Section(
+                "Workers",
+                "<table><thead><tr><th>Worker</th><th>Heartbeat age</th><th>Status</th></tr>"
+                f"</thead>\n<tbody>{worker_rows}</tbody></table>",
+            ),
+            tpl.Section("Radio", radio),
+            tpl.Section("Storage", storage_html),
+            tpl.Section("Backups", backups),
+            tpl.Section("Other", other),
+        ),
+    )
 
 
-def _page_traffic(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) -> bytes:
+def _page_traffic(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) -> tpl.Page:
     now = int(time.time())
     since_24h = now - 86400
     tz = cfg.service.timezone
@@ -739,42 +755,59 @@ def _page_traffic(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bo
         else:
             mqtt_counts["unknown"] = r["n"]
 
+    senders_24h = conn.execute(
+        "SELECT COUNT(DISTINCT sender_node_id) FROM observations WHERE server_time >= ?",
+        (since_24h,),
+    ).fetchone()[0]
+
     v = usefulness.visitors(conn, now)
     counting_from = "the last reset" if v["reset_at"] else "90 days ago"
+    last_visitor = tpl.esc(_fmt_utc(v["last_at"]) if v["last_at"] else "never")
 
-    body = f"""
-<h1>Traffic</h1>
-<h2>Last 24 hours</h2>
-<table><thead><tr><th>Hour</th><th>Packets</th><th>Unique</th><th>Senders</th><th>Direct</th></tr></thead>
-<tbody>{table_rows}</tbody></table>
-
-<h2>Traffic mix (24h, by portnum)</h2>
-<table><thead><tr><th>Portnum</th><th>Count</th></tr></thead><tbody>{mix_html}</tbody></table>
-
-<h2>Top 10 senders (24h)</h2>
-<table><thead><tr><th>Node</th><th>Name</th><th>Packets</th></tr></thead><tbody>{top_rows}</tbody></table>
-
-<h2>Transport (24h)</h2>
+    visitors_html = f"""<p class="muted">Messages sent to the garden since
+{tpl.esc(_fmt_utc(v["since"]))} ({counting_from}), leaving out your {v["own_nodes_excluded"]}
+LAB-unlocked node(s). Reset with <code>mgarden usefulness --reset</code>.</p>
 <div class="grid">
-{tpl.stat_card("MQTT", str(mqtt_counts["MQTT"]))}
-{tpl.stat_card("RF", str(mqtt_counts["RF"]))}
-{tpl.stat_card("Unknown", str(mqtt_counts["unknown"]))}
-</div>
-
-<h2>Visitors</h2>
-<p class="muted">Messages sent to the garden since {tpl.esc(_fmt_utc(v["since"]))}
-({counting_from}), leaving out your {v["own_nodes_excluded"]} LAB-unlocked node(s). Reset with
-<code>mgarden usefulness --reset</code>.</p>
-<div class="grid">
-{tpl.stat_card("Messages", str(v["messages"]))}
-{tpl.stat_card("Senders", str(v["senders"]))}
 {tpl.stat_card("Senders (7d)", str(v["senders_7d"]))}
 {tpl.stat_card("Valid commands", str(v["commands"]))}
-{tpl.stat_card("Guestbook signs", str(v["guestbook_signs"]))}
-{tpl.stat_card("Last visitor", tpl.esc(_fmt_utc(v["last_at"]) if v["last_at"] else "never"))}
-</div>
-"""
-    return tpl.layout(title="Traffic", active="/traffic", body=body)
+{tpl.stat_card("Last visitor", last_visitor)}
+</div>"""
+
+    return tpl.Page(
+        title="Traffic",
+        active="/traffic",
+        summary=(
+            ("Visitor messages", str(v["messages"])),
+            ("Visitors", str(v["senders"])),
+            ("Guestbook signs", str(v["guestbook_signs"])),
+            # Same window as the RF/MQTT split below, so the two add up.
+            ("Packets (24h)", f"{sum(mqtt_counts.values()):,}"),
+            ("Senders (24h)", str(senders_24h)),
+            (
+                "RF / MQTT / unknown (24h)",
+                f"{mqtt_counts['RF']:,} / {mqtt_counts['MQTT']:,} / {mqtt_counts['unknown']:,}",
+            ),
+        ),
+        sections=(
+            tpl.Section("Visitors", visitors_html),
+            tpl.Section(
+                "Top 10 senders (24h)",
+                "<table><thead><tr><th>Node</th><th>Name</th><th>Packets</th></tr></thead>"
+                f"<tbody>{top_rows}</tbody></table>",
+            ),
+            tpl.Section(
+                "Traffic mix (24h, by portnum)",
+                "<table><thead><tr><th>Portnum</th><th>Count</th></tr></thead>"
+                f"<tbody>{mix_html}</tbody></table>",
+            ),
+            tpl.Section(
+                "Hour by hour (24h)",
+                "<table><thead><tr><th>Hour</th><th>Packets</th><th>Unique</th><th>Senders</th>"
+                f"<th>Direct</th></tr></thead>\n<tbody>{table_rows}</tbody></table>",
+                collapsed=True,
+            ),
+        ),
+    )
 
 
 def _topic_list_rows(gb: Guestbook) -> str:
@@ -956,7 +989,8 @@ def _biggest_day(conn: sqlite3.Connection, day_floor: str) -> tuple[str, int] | 
     return (row["day"], row["distinct_senders"]) if row is not None else None
 
 
-def _render_window_section(title: str, w: dict[str, Any], biggest: tuple[str, int] | None) -> str:
+def _window_values(w: dict[str, Any], biggest: tuple[str, int] | None) -> list[tuple[str, str]]:
+    """One record window as (label, value HTML) rows, in reading order."""
     if w["best_snr"] is not None:
         snr, node_id = w["best_snr"]
         snr_s = f"{snr:+.1f} dB ({_name_and_tail(w['best_snr_name'], node_id)})"
@@ -976,20 +1010,15 @@ def _render_window_section(title: str, w: dict[str, Any], biggest: tuple[str, in
     else:
         furthest_observed_incl_mqtt_s = "n/a"
     biggest_s = f"{biggest[1]} senders ({biggest[0]})" if biggest else "n/a"
-    return f"""
-<h2>{tpl.esc(title)}</h2>
-<div class="grid">
-{tpl.stat_card("Best SNR", tpl.esc(snr_s))}
-{tpl.stat_card("Most hops", tpl.na(w["max_hops"]))}
-{tpl.stat_card("Busiest hour", tpl.na(w["busiest_hour"], "{:02d}:00"))}
-{tpl.stat_card("Biggest day", biggest_s)}
-{tpl.stat_card("Furthest direct", furthest_direct_s)}
-{tpl.stat_card("Furthest observed", tpl.esc(furthest_observed_s))}
-{tpl.stat_card(
-    "Furthest observed (incl. MQTT-relayed/unknown)", tpl.esc(furthest_observed_incl_mqtt_s)
-)}
-</div>
-"""
+    return [
+        ("Best SNR", tpl.esc(snr_s)),
+        ("Most hops", tpl.na(w["max_hops"])),
+        ("Busiest hour", tpl.na(w["busiest_hour"], "{:02d}:00")),
+        ("Biggest day", biggest_s),
+        ("Furthest direct", furthest_direct_s),
+        ("Furthest observed", tpl.esc(furthest_observed_s)),
+        ("Furthest observed (incl. MQTT-relayed/unknown)", tpl.esc(furthest_observed_incl_mqtt_s)),
+    ]
 
 
 def _records_windows(
@@ -1015,7 +1044,7 @@ def _records_windows(
     }
 
 
-def _page_records(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) -> bytes:
+def _page_records(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool) -> tpl.Page:
     windows = _records_windows(cfg, conn)
     today_w, today_biggest = windows["today"]
     week_w, week_biggest = windows["week"]
@@ -1041,26 +1070,55 @@ def _page_records(cfg: Config, conn: sqlite3.Connection, status: dict, stale: bo
         for r in wordle_rows
     ) or '<tr><td colspan="4" class="muted">none yet</td></tr>'
 
-    body = f"""
-<h1>Records</h1>
-{_render_window_section("Today", today_w, today_biggest)}
-{_render_window_section("Last 7 days", week_w, week_biggest)}
-{_render_window_section("All time", all_w, all_biggest)}
+    periods = (
+        _window_values(today_w, today_biggest),
+        _window_values(week_w, week_biggest),
+        _window_values(all_w, all_biggest),
+    )
+    record_rows = "".join(
+        f"<tr><th scope=\"row\">{tpl.esc(label)}</th>"
+        + "".join(f"<td>{values[i][1]}</td>" for values in periods)
+        + "</tr>"
+        for i, (label, _) in enumerate(periods[0])
+    )
+    all_time = dict(periods[2])
 
-<h2>Book trivia (all-time)</h2>
-<p>{book_total_solves} solves across {book_total_guesses} guesses</p>
-<table><thead><tr><th>Book</th><th>Shown</th><th>Guesses</th><th>Solves</th></tr></thead>
-<tbody>{book_table}</tbody></table>
+    return tpl.Page(
+        title="Records",
+        active="/records",
+        summary=(
+            ("Best SNR (all time)", all_time["Best SNR"]),
+            ("Furthest direct (all time)", all_time["Furthest direct"]),
+            ("Most hops (all time)", all_time["Most hops"]),
+            ("Biggest day (all time)", all_time["Biggest day"]),
+            ("Book trivia solves", str(book_total_solves)),
+            ("Wordle solves (7 d)", str(wordle_total_solves)),
+        ),
+        sections=(
+            tpl.Section(
+                "Records by period",
+                "<table><thead><tr><th>Record</th><th>Today</th><th>Last 7 days</th>"
+                f"<th>All time</th></tr></thead>\n<tbody>{record_rows}</tbody></table>",
+            ),
+            tpl.Section(
+                "Book trivia (all-time)",
+                f"<p>{book_total_solves} solves across {book_total_guesses} guesses</p>\n"
+                "<table><thead><tr><th>Book</th><th>Shown</th><th>Guesses</th><th>Solves</th>"
+                f"</tr></thead>\n<tbody>{book_table}</tbody></table>",
+                collapsed=True,
+            ),
+            tpl.Section(
+                "Wordle (last 7 days)",
+                f"<p>{wordle_total_solves} solves in the last 7 days</p>\n"
+                "<table><thead><tr><th>Day</th><th>Players</th><th>Solves</th>"
+                f"<th>Avg guesses</th></tr></thead>\n<tbody>{wordle_table}</tbody></table>",
+                collapsed=True,
+            ),
+        ),
+    )
 
-<h2>Wordle (last 7 days)</h2>
-<p>{wordle_total_solves} solves in the last 7 days</p>
-<table><thead><tr><th>Day</th><th>Players</th><th>Solves</th><th>Avg guesses</th></tr></thead>
-<tbody>{wordle_table}</tbody></table>
-"""
-    return tpl.layout(title="Records", active="/records", body=body)
 
-
-def _page_digest_index(cfg: Config) -> bytes:
+def _page_digest_index(cfg: Config) -> tpl.Page:
     digest_dir = _digest_dir(cfg)
     try:
         names = sorted(
@@ -1080,14 +1138,16 @@ def _page_digest_index(cfg: Config) -> bytes:
         f'<li><a href="/digest/{tpl.esc(n)}">{tpl.esc(n)}</a></li>' for n in names
     ) or '<li class="muted">none</li>'
 
-    body = f"""
-<h1>Digest</h1>
-<h2>Latest ({tpl.esc(names[0]) if names else "n/a"})</h2>
-{latest_html}
-<h2>All digests</h2>
-<ul>{list_html}</ul>
-"""
-    return tpl.layout(title="Digest", active="/digest", body=body)
+    return tpl.Page(
+        title="Digest",
+        active="/digest",
+        summary=(("Latest digest", tpl.esc(names[0]) if names else "n/a"),
+                 ("Digests kept", str(len(names)))),
+        sections=(
+            tpl.Section(f"Latest ({names[0] if names else 'n/a'})", latest_html),
+            tpl.Section("All digests", f"<ul>{list_html}</ul>"),
+        ),
+    )
 
 
 def _load_digest(cfg: Config, day: str) -> dict | None:
@@ -1104,16 +1164,22 @@ def _load_digest(cfg: Config, day: str) -> dict | None:
         return None
 
 
-def _page_digest_day(cfg: Config, day: str) -> bytes | None:
+def _page_digest_day(cfg: Config, day: str) -> tpl.Page | None:
     d = _load_digest(cfg, day)
     if d is None:
         return None
-    body = f"""
-<h1>Digest — {tpl.esc(day)}</h1>
-<pre>{tpl.esc(format_digest(d))}</pre>
-<p><a href="/digest">back to all digests</a></p>
-"""
-    return tpl.layout(title=f"Digest {day}", active="/digest", body=body)
+    return tpl.Page(
+        title=f"Digest — {day}",
+        active="/digest",
+        doc_title=f"Digest {day}",
+        sections=(
+            tpl.Section(
+                "",
+                f"<pre>{tpl.esc(format_digest(d))}</pre>\n"
+                '<p><a href="/digest">back to all digests</a></p>',
+            ),
+        ),
+    )
 
 
 _NODES_PER_PAGE = 200
@@ -1121,7 +1187,7 @@ _NODES_PER_PAGE = 200
 
 def _page_nodes(
     cfg: Config, conn: sqlite3.Connection, status: dict, stale: bool, page: int
-) -> bytes:
+) -> tpl.Page:
     now = int(time.time())
     since7 = now - 7 * 86400
     # node_daily.day is a UTC calendar day (see collector.py / database.py),
@@ -1173,18 +1239,37 @@ def _page_nodes(
         nav_bits.insert(0, f'<a href="/nodes?page={page - 1}">newer</a>')
     pagination = f'<div class="pagination">Page {page} · {" · ".join(nav_bits)}</div>'
 
-    body = f"""
-<h1>Nodes (last 7 days)</h1>
-<table><thead><tr><th>Id</th><th>Name</th><th>HW</th><th>Role</th><th>First seen</th>
-<th>Last seen</th><th>Packets today (UTC)</th><th>Best SNR</th><th>Direct?</th>
-<th>Position?</th></tr></thead>
-<tbody>{table}</tbody></table>
-{pagination}
-"""
-    return tpl.layout(title="Nodes", active="/nodes", body=body)
+    counts = conn.execute(
+        "SELECT COUNT(*) AS seen, "
+        "SUM(last_position_lat IS NOT NULL) AS positioned FROM nodes WHERE observed_last_seen >= ?",
+        (since7,),
+    ).fetchone()
+    heard_today = sum(1 for d in daily_today.values() if d["packets"])
+    direct_today = sum(1 for d in daily_today.values() if d["direct_packets"])
+
+    return tpl.Page(
+        title="Nodes (last 7 days)",
+        active="/nodes",
+        doc_title="Nodes",
+        summary=(
+            ("Nodes (7 d)", f"{counts['seen']:,}"),
+            ("Heard today (UTC)", f"{heard_today:,}"),
+            ("Direct today (UTC)", f"{direct_today:,}"),
+            ("With a position", f"{counts['positioned'] or 0:,}"),
+        ),
+        sections=(
+            tpl.Section(
+                "All nodes, most recent first",
+                "<table><thead><tr><th>Id</th><th>Name</th><th>HW</th><th>Role</th>"
+                "<th>First seen</th><th>Last seen</th><th>Packets today (UTC)</th>"
+                "<th>Best SNR</th><th>Direct?</th><th>Position?</th></tr></thead>\n"
+                f"<tbody>{table}</tbody></table>\n{pagination}",
+            ),
+        ),
+    )
 
 
-def _page_node_profile(cfg: Config, conn: sqlite3.Connection, node_id: str) -> bytes | None:
+def _page_node_profile(cfg: Config, conn: sqlite3.Connection, node_id: str) -> tpl.Page | None:
     node = conn.execute("SELECT * FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
     if node is None:
         return None
@@ -1319,42 +1404,54 @@ def _page_node_profile(cfg: Config, conn: sqlite3.Connection, node_id: str) -> b
     name = node["short_name"] or node["long_name"] or fallback_display_name(node_id)
     first_seen = _fmt_utc(node["observed_first_seen"])
     last_seen = _fmt_utc(node["observed_last_seen"])
-    body = f"""
-<h1>Node {tpl.esc(_row_node_label(node))}</h1>
-<div class="grid">
-{tpl.stat_card("Name", tpl.esc(name))}
+    details = f"""<div class="grid">
 {tpl.stat_card("Hardware", tpl.esc(node["hw_model"]) or "n/a")}
 {tpl.stat_card("Role", tpl.esc(node["role"]) or "n/a")}
 {tpl.stat_card("First seen", tpl.esc(first_seen))}
-{tpl.stat_card("Last seen", tpl.esc(last_seen))}
-{tpl.stat_card("Days seen (7d)", f"{days_seen_7d} / 7")}
 {tpl.stat_card("Hop class (7d)", tpl.esc(hops_class))}
-{tpl.stat_card("Best SNR (7d)", tpl.na(best_snr_7d, "{:+.1f} dB"))}
 {tpl.stat_card("Typical SNR (7d, mean)", tpl.na(typical_snr_7d, "{:+.1f} dB"))}
 {tpl.stat_card("Best hops (7d)", tpl.na(best_hops_7d))}
 {tpl.stat_card("Typical hops (7d, mean)", tpl.na(typical_hops_7d, "{:.1f}"))}
-{tpl.stat_card("Packets (7d)", str(packets_7d))}
 {tpl.stat_card("Packets (all)", str(packets_all))}
 {tpl.stat_card("Battery (last)", tpl.na(node["last_battery"], "{}%"))}
 {tpl.stat_card("Observations", str(node["observation_count"]))}
 {tpl.stat_card("Positions recorded", str(positions_count))}
 </div>
-{distance_bearing_html}
-<h2>30-day trend</h2>
-<p class="muted">Packets/day</p>
-{sparkline_packets}
-<p class="muted">Best SNR/day</p>
-{sparkline_snr}
-<h2>Events</h2>
-<ul>{events_html}</ul>
-<h2>Daily rollups (last 30 days)</h2>
-<table><thead><tr><th>Day</th><th>Packets</th><th>Direct</th><th>Best SNR</th>
-<th>Typical SNR</th><th>Best hops</th><th>Typical hops</th></tr></thead>
-<tbody>{daily_table}</tbody></table>
-<p><a href="/nodes">back to nodes</a> &middot; <a href="/map">map</a> &middot;
-<a href="/topology">topology</a></p>
-"""
-    return tpl.layout(title=f"Node {node_id}", active="/nodes", body=body)
+{distance_bearing_html}"""
+
+    return tpl.Page(
+        title=f"Node {_row_node_label(node)}",
+        active="/nodes",
+        doc_title=f"Node {node_id}",
+        summary=(
+            ("Name", tpl.esc(name)),
+            ("Last seen", tpl.esc(last_seen)),
+            ("Days seen (7d)", f"{days_seen_7d} / 7"),
+            ("Best SNR (7d)", tpl.na(best_snr_7d, "{:+.1f} dB")),
+            ("Packets (7d)", str(packets_7d)),
+        ),
+        sections=(
+            tpl.Section(
+                "30-day trend",
+                f'<p class="muted">Packets/day</p>\n{sparkline_packets}\n'
+                f'<p class="muted">Best SNR/day</p>\n{sparkline_snr}',
+            ),
+            tpl.Section("Details", details),
+            tpl.Section("Events", f"<ul>{events_html}</ul>"),
+            tpl.Section(
+                "Daily rollups (last 30 days)",
+                "<table><thead><tr><th>Day</th><th>Packets</th><th>Direct</th><th>Best SNR</th>"
+                "<th>Typical SNR</th><th>Best hops</th><th>Typical hops</th></tr></thead>\n"
+                f"<tbody>{daily_table}</tbody></table>",
+                collapsed=True,
+            ),
+            tpl.Section(
+                "",
+                '<p><a href="/nodes">back to nodes</a> &middot; <a href="/map">map</a> &middot;\n'
+                '<a href="/topology">topology</a></p>',
+            ),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1462,7 +1559,7 @@ def _map_svg(plotted: list[dict[str, Any]], rings: list[float]) -> str:
     return "".join(parts)
 
 
-def _page_map(cfg: Config, conn: sqlite3.Connection, query: dict[str, list[str]]) -> bytes:
+def _page_map(cfg: Config, conn: sqlite3.Connection, query: dict[str, list[str]]) -> tpl.Page:
     now = int(time.time())
     tz = cfg.service.timezone
     since, direct_only, role, new_only, range_label = _parse_map_filters(query, tz=tz, now=now)
@@ -1548,9 +1645,9 @@ def _page_map(cfg: Config, conn: sqlite3.Connection, query: dict[str, list[str]]
     if obs is None:
         svg = ""
         note = (
-            '<div class="banner">Observatory location not configured '
+            "Observatory location not configured "
             "([observatory] latitude/longitude): showing a list of nodes with a known "
-            "position only -- no map, no distance/bearing, no rings.</div>"
+            "position only -- no map, no distance/bearing, no rings."
         )
     else:
         note = ""
@@ -1585,23 +1682,46 @@ def _page_map(cfg: Config, conn: sqlite3.Connection, query: dict[str, list[str]]
         else ""
     )
 
-    body = f"""
-{note}
-<h1>Map</h1>
-<p class="muted">Filters: {filter_note} &middot;
-<a href="/map?range=today">today</a> &middot; <a href="/map?range=7d">7 d</a> &middot;
-<a href="/map?direct=1">direct only</a> &middot; <a href="/map?new=1">new (&le;24h)</a> &middot;
-<a href="/map">clear filters</a></p>
-{svg}
-{cap_note}
-<table><thead><tr><th>Id</th><th>Name</th><th>Distance</th><th>Bearing</th>
-<th>Hops class</th><th>Last seen</th><th>Position precision</th></tr></thead>
-<tbody>{table}</tbody></table>
-<p class="muted">Positions are voluntarily advertised by each node and may be coarse or stale.
-"Direct"/"2-hop"/"3+ hops" are inferred from received packets over the last 7 days -- observed,
-never a known physical route.</p>
-"""
-    return tpl.layout(title="Map", active="/map", body=body)
+    classes = Counter(e["class"] for e in plotted)
+    furthest_plotted = max(
+        (e["distance_km"] for e in plotted if e.get("distance_km") is not None and e["plausible"]),
+        default=None,
+    )
+    sections = []
+    if svg:
+        sections.append(tpl.Section("Map", f"{svg}\n{cap_note}", open_in_compare=True))
+    sections.append(
+        tpl.Section(
+            "Positioned nodes",
+            ("" if svg else cap_note)
+            + "<table><thead><tr><th>Id</th><th>Name</th><th>Distance</th><th>Bearing</th>"
+            "<th>Hops class</th><th>Last seen</th><th>Position precision</th></tr></thead>\n"
+            f"<tbody>{table}</tbody></table>\n"
+            '<p class="muted">Positions are voluntarily advertised by each node and may be '
+            'coarse or stale. "Direct"/"2-hop"/"3+ hops" are inferred from received packets '
+            "over the last 7 days -- observed, never a known physical route.</p>",
+        )
+    )
+
+    return tpl.Page(
+        title="Map",
+        active="/map",
+        banner=note,
+        intro=(
+            f'<p class="intro">Filters: {filter_note} &middot; '
+            '<a href="/map?range=today">today</a> &middot; <a href="/map?range=7d">7 d</a> '
+            '&middot; <a href="/map?direct=1">direct only</a> &middot; '
+            '<a href="/map?new=1">new (&le;24h)</a> &middot; <a href="/map">clear filters</a></p>'
+        ),
+        summary=(
+            ("Positioned nodes", f"{matched_count:,}"),
+            ("Direct", str(classes["direct"])),
+            ("2-hop", str(classes["2-hop"])),
+            ("3+ hops", str(classes["3+ hops"])),
+            ("Furthest plausible", tpl.na(furthest_plotted, "{:.0f} km")),
+        ),
+        sections=tuple(sections),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1696,7 +1816,7 @@ def _topology_rows(
     return neighbours, two_hop_rows
 
 
-def _page_topology(cfg: Config, conn: sqlite3.Connection) -> bytes:
+def _page_topology(cfg: Config, conn: sqlite3.Connection) -> tpl.Page:
     now = int(time.time())
     since24 = now - 86400
     since48 = now - 2 * 86400
@@ -1756,36 +1876,59 @@ def _page_topology(cfg: Config, conn: sqlite3.Connection) -> bytes:
 
     svg = _topology_svg(neighbours, two_hop_rows)
 
-    body = f"""
-<h1>Topology</h1>
-<p class="muted">Observed/inferred only: Meshtastic gives no complete link knowledge. Every edge
-here is a locally inferred "we heard this node direct" observation, never a confirmed physical
-route.</p>
-{svg}
-<h2>Most frequently heard direct neighbours (7 d)</h2>
-<table><thead><tr><th>Id</th><th>Name</th><th>Count</th><th>Last seen</th></tr></thead>
-<tbody>{neighbour_table}</tbody></table>
-
-<h2>Stable neighbours (seen &ge;5 of 7 days)</h2>
-<table><thead><tr><th>Id</th><th>Days seen</th></tr></thead><tbody>{stable_table}</tbody></table>
-
-<h2>Links appeared in the last 24 h</h2>
-<table><thead><tr><th>Id</th><th>Name</th><th>Count</th><th>Last seen</th></tr></thead>
-<tbody>{appeared_table}</tbody></table>
-
-<h2>Links disappeared in the last 24 h</h2>
-<p class="muted">Best-effort inference: a link last heard 24-48 h ago and not since. Not proof
-the node is gone -- only that it has not been heard direct in the last day.</p>
-<table><thead><tr><th>Id</th><th>Name</th><th>Count</th><th>Last seen</th></tr></thead>
-<tbody>{disappeared_table}</tbody></table>
-
-<h2>2-hop nodes ({len(two_hop_rows)})</h2>
-<p class="muted">Drawn unattached on the outer ring: Meshtastic packets do not report which
-neighbour relayed them, so their placement here is not derived from real relay data.</p>
-<table><thead><tr><th>Id</th><th>Name</th><th>Last seen</th></tr></thead>
-<tbody>{two_hop_table}</tbody></table>
-"""
-    return tpl.layout(title="Topology", active="/topology", body=body)
+    link_head = (
+        "<table><thead><tr><th>Id</th><th>Name</th><th>Count</th><th>Last seen</th></tr></thead>"
+    )
+    return tpl.Page(
+        title="Topology",
+        active="/topology",
+        intro=(
+            '<p class="intro">Observed/inferred only: Meshtastic gives no complete link '
+            'knowledge. Every edge here is a locally inferred "we heard this node direct" '
+            "observation, never a confirmed physical route.</p>"
+        ),
+        summary=(
+            ("Direct neighbours (7 d)", str(len(neighbours))),
+            ("Stable neighbours", str(len(stable_rows))),
+            ("Links appeared (24 h)", str(len(appeared))),
+            ("Links disappeared (24 h)", str(len(disappeared))),
+            ("2-hop nodes", str(len(two_hop_rows))),
+        ),
+        sections=(
+            tpl.Section("Graph", svg, open_in_compare=True),
+            tpl.Section(
+                "Most frequently heard direct neighbours (7 d)",
+                f"{link_head}\n<tbody>{neighbour_table}</tbody></table>",
+            ),
+            tpl.Section(
+                "Stable neighbours (seen ≥5 of 7 days)",
+                "<table><thead><tr><th>Id</th><th>Days seen</th></tr></thead>"
+                f"<tbody>{stable_table}</tbody></table>",
+            ),
+            tpl.Section(
+                "Links appeared in the last 24 h",
+                f"{link_head}\n<tbody>{appeared_table}</tbody></table>",
+                collapsed=True,
+            ),
+            tpl.Section(
+                "Links disappeared in the last 24 h",
+                '<p class="muted">Best-effort inference: a link last heard 24-48 h ago and not '
+                "since. Not proof the node is gone -- only that it has not been heard direct in "
+                "the last day.</p>\n"
+                f"{link_head}\n<tbody>{disappeared_table}</tbody></table>",
+                collapsed=True,
+            ),
+            tpl.Section(
+                f"2-hop nodes ({len(two_hop_rows)})",
+                '<p class="muted">Drawn unattached on the outer ring: Meshtastic packets do not '
+                "report which neighbour relayed them, so their placement here is not derived "
+                "from real relay data.</p>\n"
+                "<table><thead><tr><th>Id</th><th>Name</th><th>Last seen</th></tr></thead>"
+                f"<tbody>{two_hop_table}</tbody></table>",
+                collapsed=True,
+            ),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1793,7 +1936,7 @@ neighbour relayed them, so their placement here is not derived from real relay d
 # ---------------------------------------------------------------------------
 
 
-def _page_propagation(cfg: Config, conn: sqlite3.Connection) -> bytes:
+def _page_propagation(cfg: Config, conn: sqlite3.Connection) -> tpl.Page:
     now = int(time.time())
     obs = _observatory_location(cfg)
 
@@ -1835,22 +1978,39 @@ def _page_propagation(cfg: Config, conn: sqlite3.Connection) -> bytes:
                 n["short_name"] or n["long_name"] or fallback_display_name(n["node_id"])
             )
 
-    sections = []
+    overview_rows = []
+    per_day_tables = []
     for node_id, node_rows in by_node.items():
+        tail = tpl.esc(fallback_display_name(node_id))
         name = tpl.esc(node_names.get(node_id, fallback_display_name(node_id)))
+        best = [r["best_snr"] for r in node_rows if r["best_snr"] is not None]
+        typical = [r["typical_snr"] for r in node_rows if r["typical_snr"] is not None]
+        heat = tpl.svg_heat_strip([r["day"] for r in node_rows], [r["best_snr"] for r in node_rows])
+        overview_rows.append(
+            f'<tr><td><a href="/nodes/{tpl.esc(node_id)}">{tail}</a></td><td>{name}</td>'
+            f"<td>{heat}</td><td>{len(node_rows)}</td>"
+            f"<td>{tpl.na(max(best) if best else None, '{:+.1f}')}</td>"
+            f"<td>{tpl.na(statistics.fmean(typical) if typical else None, '{:+.1f}')}</td></tr>"
+        )
         table_rows = "".join(
             f"<tr><td>{tpl.esc(r['day'])}</td><td>{tpl.na(r['best_snr'], '{:+.1f}')}</td>"
             f"<td>{tpl.na(r['typical_snr'], '{:+.1f}')}</td></tr>"
             for r in node_rows
         )
-        heat = tpl.svg_heat_strip([r["day"] for r in node_rows], [r["best_snr"] for r in node_rows])
-        sections.append(
-            f"<h3>{tpl.esc(fallback_display_name(node_id))} &mdash; {name}</h3>{heat}"
-            "<table><thead><tr><th>Day</th><th>Best SNR</th>"
-            "<th>Mean SNR (typical)</th></tr></thead>"
+        per_day_tables.append(
+            f"<table><caption>{tail} &mdash; {name}</caption>"
+            "<thead><tr><th>Day</th><th>Best SNR</th><th>Mean SNR (typical)</th></tr></thead>"
             f"<tbody>{table_rows}</tbody></table>"
         )
-    sections_html = "".join(sections) or '<p class="muted">no direct nodes in the last 14 days</p>'
+    overview_html = (
+        "<table><thead><tr><th>Id</th><th>Name</th><th>Best SNR by day</th><th>Days heard</th>"
+        "<th>Best SNR</th><th>Mean typical SNR</th></tr></thead>"
+        f"<tbody>{''.join(overview_rows)}</tbody></table>"
+        if overview_rows
+        else '<p class="muted">no direct nodes in the last 14 days</p>'
+    )
+    unusual_count: int | None = None
+    median_km: float | None = None
 
     if obs is None:
         unusual_html = (
@@ -1891,6 +2051,7 @@ def _page_propagation(cfg: Config, conn: sqlite3.Connection) -> bytes:
             median = statistics.median(per_day.values())
             threshold = median * 1.5
             unusual_days = sorted((day, dist) for day, dist in per_day.items() if dist > threshold)
+            unusual_count, median_km = len(unusual_days), median
             flagged = (
                 ", ".join(f"{tpl.esc(day)} ({dist:.0f} km)" for day, dist in unusual_days)
                 if unusual_days
@@ -1908,17 +2069,29 @@ def _page_propagation(cfg: Config, conn: sqlite3.Connection) -> bytes:
                 f"<th>Unusual?</th></tr></thead><tbody>{distance_rows}</tbody></table>"
             )
 
-    body = f"""
-<h1>Propagation</h1>
-<h2>SNR by day, direct nodes (last 14 d)</h2>
-{sections_html}
-<h2>Unusual distance</h2>
-{unusual_html}
-<h2>Weather</h2>
-<p class="muted">TODO: no weather correlation in this build (phase 2 ruling: propagation pages
-work from SNR/RSSI/distance history alone).</p>
-"""
-    return tpl.layout(title="Propagation", active="/propagation", body=body)
+    sections = [tpl.Section("SNR by node, direct nodes (last 14 d)", overview_html)]
+    if per_day_tables:
+        sections.append(
+            tpl.Section("Per-day SNR values", "\n".join(per_day_tables), collapsed=True)
+        )
+    sections.append(tpl.Section("Unusual distance", unusual_html))
+    sections.append(
+        tpl.Section(
+            "Weather",
+            '<p class="muted">TODO: no weather correlation in this build (phase 2 ruling: '
+            "propagation pages work from SNR/RSSI/distance history alone).</p>",
+        )
+    )
+    return tpl.Page(
+        title="Propagation",
+        active="/propagation",
+        summary=(
+            ("Direct nodes (14 d)", str(len(by_node))),
+            ("Median furthest direct", tpl.na(median_km, "{:.0f} km")),
+            ("Unusual-distance days", tpl.na(unusual_count)),
+        ),
+        sections=tuple(sections),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2389,7 +2562,7 @@ def _select_meshes(
 
 def _observatory_body(
     cfg: Config, name: str, query: dict[str, list[str]], arg: str | None
-) -> bytes | None:
+) -> tpl.Page | None:
     """One observatory page for one mesh's config; None when the page does
     not exist there (unknown digest day or node)."""
     if name == "digest_index":
@@ -2433,21 +2606,24 @@ def _mesh_page(
     pages = [(label, page) for label, page in rendered if page is not None]
     if not pages:
         return _not_found(missing)
-    body = pages[0][1]
-    if len(sections) > 1:
-        # One document: the first page's chrome around every mesh's body.
-        stacked = "\n".join(
-            f"<h2>{tpl.esc(label)}</h2>\n{tpl.main_of(page)}" for label, page in pages
-        )
-        body = tpl.with_main(body, stacked)
+    first = pages[0][1]
+    # The switcher's own ?mesh= links must not get a second mesh= from
+    # propagate_mesh, so it goes into this slot after links are rewritten.
+    slot = "<!--mesh-switcher-->"
+    toolbar = slot if peer is not None else ""
+    if len(pages) > 1:
+        main_html = tpl.compare_body(pages, toolbar)
+    else:
+        main_html = tpl.page_body(first, toolbar)
+    text = tpl.layout(
+        title=first.doc_title or first.title, active=first.active, body=main_html
+    ).decode("utf-8")
     own_code = _MESH_CODES.get(cfg.radio.transport, "mt")
     if selected != own_code:
-        text = tpl.propagate_mesh(body.decode("utf-8"), selected)
-        body = text.encode("utf-8")
+        text = tpl.propagate_mesh(text, selected)
     if peer is not None:
-        switcher = tpl.mesh_switcher(path, selected, _MESH_OPTIONS)
-        body = tpl.with_main(body, switcher + "\n" + tpl.main_of(body))
-    return _ok(body)
+        text = text.replace(slot, tpl.mesh_switcher(path, selected, _MESH_OPTIONS), 1)
+    return _ok(text.encode("utf-8"))
 
 
 def _dispatch(cfg: Config, path: str, query: dict[str, list[str]]) -> tuple[HTTPStatus, str, bytes]:

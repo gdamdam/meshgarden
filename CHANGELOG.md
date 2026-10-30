@@ -9,6 +9,16 @@ and this project's version numbers follow [PEP 440](https://peps.python.org/pep-
 
 ## [Unreleased]
 
+### Changed
+
+- Dashboard reorganized. Every page now reads title, headline numbers, then detail sections, with
+  long tables folded until clicked. `?mesh=both` shows one title and a Meshtastic | MeshCore table
+  of the headline numbers instead of two full pages stacked (which also repeated the page title
+  under each mesh name). Tabs are grouped into Overview, Community and Network. `/records` is one
+  table by period instead of 21 cards; `/propagation` is one row per node instead of a table per
+  node. Ages and uptime read as `1h 22m` instead of raw seconds. URLs and `/api/records.json` are
+  unchanged.
+
 ## [1.14.0] - 2026-10-30
 
 ### Added

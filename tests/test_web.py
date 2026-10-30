@@ -623,7 +623,7 @@ def test_nodes_page_looks_up_todays_stats_by_utc_day(tmp_path, monkeypatch):
         base_cfg = _cfg(tmp_path)
         cfg = replace(base_cfg, service=replace(base_cfg.service, timezone=tz))
         monkeypatch.setattr(web.time, "time", lambda: now)
-        body = web._page_nodes(cfg, conn, status={}, stale=False, page=1).decode()
+        body = web.tpl.render(web._page_nodes(cfg, conn, status={}, stale=False, page=1)).decode()
     finally:
         conn.close()
 
@@ -1765,18 +1765,24 @@ def test_now_page_mesh_mc_uses_peer(tmp_path):
     assert "Abcd" in own and "Peerz" not in own
     assert "Peerz" in peer and "Abcd" not in peer
     assert '<a href="/nodes?mesh=mt">Meshtastic</a>' in peer
-    assert "<b>MeshCore</b>" in peer
+    assert '<b aria-current="true">MeshCore</b>' in peer
     status, now_page = _page(cfg, "/", {"mesh": ["mc"]})
-    assert status == 200 and "<b>MeshCore</b>" in now_page
+    assert status == 200 and '<b aria-current="true">MeshCore</b>' in now_page
 
 
 def test_both_renders_two_sections(tmp_path):
     cfg = _mesh_cfg(tmp_path, with_peer=True)
     status, text = _page(cfg, "/nodes", {"mesh": ["both"]})
     assert status == 200
-    assert text.index("<h2>Meshtastic</h2>") < text.index("<h2>MeshCore</h2>")
+    assert text.index('<h2 class="mesh">Meshtastic</h2>') < text.index(
+        '<h2 class="mesh">MeshCore</h2>'
+    )
     assert "Abcd" in text and "Peerz" in text
     assert text.count("</main>") == 1
+    # One page title above both meshes, and their headline numbers side by side.
+    assert text.count("<h1>") == 1
+    assert text.index("<h1>") < text.index('class="compare"') < text.index('<h2 class="mesh">')
+    assert '<th scope="col">Meshtastic</th><th scope="col">MeshCore</th>' in text
 
 
 def test_guestbook_page_reads_bbs(tmp_path):
@@ -1892,3 +1898,28 @@ def test_every_page_serves_only_the_hash_pinned_sort_script():
     digest = base64.b64encode(hashlib.sha256(scripts[0].encode()).digest()).decode()
     assert f"'sha256-{digest}'" == SORT_SCRIPT_CSP
     assert "innerHTML" not in scripts[0] and "fetch(" not in scripts[0]
+
+
+def test_compare_body_aligns_headlines_and_folds_details():
+    from meshgarden import web_templates as t
+
+    mt = t.Page(
+        title="Traffic",
+        active="/traffic",
+        summary=(("Packets", "10"), ("Signs", "1")),
+        sections=(t.Section("Map", "<svg></svg>", open_in_compare=True), t.Section("Hourly", "x")),
+    )
+    mc = t.Page(title="Traffic", active="/traffic", summary=(("Packets", "4"),), banner="stale")
+    text = t.compare_body([("Meshtastic", mt), ("MeshCore", mc)])
+
+    assert text.count("<h1>") == 1
+    assert '<tr><th scope="row">Signs</th><td>1</td><td>—</td></tr>' in text
+    assert "<b>MeshCore:</b> stale" in text
+    assert "<section><h3>Map</h3>" in text
+    assert "<details><summary><h3>Hourly</h3></summary>" in text
+    # MeshCore has no sections, so it gets no empty heading.
+    assert '<h2 class="mesh">MeshCore</h2>' not in text
+
+    folded = t.Section("A", "a", collapsed=True)
+    single = t.page_body(t.Page(title="T", active="/", sections=(folded,)))
+    assert "<details><summary><h2>A</h2></summary>" in single

@@ -14,18 +14,23 @@ import hashlib
 import html
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 
-_NAV_ITEMS: tuple[tuple[str, str], ...] = (
-    ("/", "Right now"),
-    ("/health", "Health"),
-    ("/traffic", "Traffic"),
-    ("/guestbook", "Guestbook"),
-    ("/records", "Records"),
-    ("/digest", "Digest"),
-    ("/nodes", "Nodes"),
-    ("/map", "Map"),
-    ("/topology", "Topology"),
-    ("/propagation", "Propagation"),
+_NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    ("Overview", (("/", "Right now"), ("/traffic", "Traffic"), ("/health", "Health"))),
+    ("Community", (("/guestbook", "Guestbook"), ("/records", "Records"), ("/digest", "Digest"))),
+    (
+        "Network",
+        (
+            ("/nodes", "Nodes"),
+            ("/map", "Map"),
+            ("/topology", "Topology"),
+            ("/propagation", "Propagation"),
+        ),
+    ),
+)
+_NAV_ITEMS: tuple[tuple[str, str], ...] = tuple(
+    item for _, items in _NAV_GROUPS for item in items
 )
 
 # Brand-neutral palette: readable in both `prefers-color-scheme` states.
@@ -63,9 +68,36 @@ nav.top a:hover { color: var(--fg); background: var(--card); }
 nav.top a.active { color: var(--fg); font-weight: 600; background: var(--card);
   border-bottom-color: var(--accent); }
 nav.top a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Groups read as Overview | Community | Network; the small label sits above
+   its tabs and the groups wrap whole on narrow screens. */
+nav.top .group { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px;
+  padding-right: 10px; margin-right: 6px; border-right: 1px solid var(--border); }
+nav.top .group:last-child { border-right: none; }
+nav.top .group-label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase;
+  letter-spacing: .05em; margin-right: 2px; }
 main { padding: 16px; max-width: 960px; margin: 0 auto; }
-h1 { font-size: 1.25rem; margin: 0 0 12px; }
-h2 { font-size: 1.05rem; margin: 20px 0 8px; }
+h1 { font-size: 1.4rem; margin: 0 0 10px; }
+h2 { font-size: 1.1rem; margin: 26px 0 8px; }
+h3 { font-size: 0.98rem; margin: 16px 0 6px; }
+h2.mesh { border-bottom: 2px solid var(--accent); padding-bottom: 4px; margin-top: 32px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 14px;
+  color: var(--muted); font-size: 0.85rem; }
+.toolbar a, .toolbar b { padding: 2px 10px; border: 1px solid var(--border); border-radius: 999px;
+  text-decoration: none; }
+.toolbar b { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.intro { color: var(--muted); margin: 0 0 14px; }
+.summary { margin-bottom: 6px; }
+section { margin-top: 4px; }
+details { border: 1px solid var(--border); border-radius: 8px; padding: 0 12px;
+  margin: 10px 0; background: var(--card); }
+details[open] { padding-bottom: 8px; }
+summary { cursor: pointer; padding: 8px 0; list-style-position: outside; }
+summary h2, summary h3 { display: inline; margin: 0; font-size: 1rem; }
+summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+table.compare th[scope="row"] { color: var(--fg); font-weight: 500; font-size: 0.9rem; }
+table.compare tr:first-child th { color: var(--muted); }
+table.compare td { font-weight: 600; }
+caption { text-align: left; font-weight: 600; padding: 8px 0 2px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 10px; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
@@ -137,6 +169,22 @@ def stat_card(label: str, value: str) -> str:
         f'<div class="card"><div class="label">{esc(label)}</div>'
         f'<div class="value">{value}</div></div>'
     )
+
+
+def duration(seconds: float | None) -> str:
+    """Seconds as the two largest units ("45s", "12m 3s", "1h 22m", "3d 4h");
+    "n/a" when unknown. Dashboard reading, so rounding down is fine."""
+    if not isinstance(seconds, (int, float)):
+        return "n/a"
+    s = max(0, int(seconds))
+    days, s = divmod(s, 86400)
+    hours, s = divmod(s, 3600)
+    minutes, s = divmod(s, 60)
+    parts = [(days, "d"), (hours, "h"), (minutes, "m"), (s, "s")]
+    while len(parts) > 1 and parts[0][0] == 0:
+        parts.pop(0)
+    shown = [f"{n}{unit}" for n, unit in parts[:2] if n or unit == parts[0][1]]
+    return " ".join(shown)
 
 
 def na(value: object, fmt: str = "{}") -> str:
@@ -339,11 +387,17 @@ SORT_SCRIPT_CSP = "'sha256-" + base64.b64encode(
 
 
 def layout(*, title: str, active: str, body: str) -> bytes:
-    nav_links = []
-    for href, label in _NAV_ITEMS:
-        cls = ' class="active" aria-current="page"' if href == active else ""
-        nav_links.append(f'<a href="{href}"{cls}>{label}</a>')
-    nav = "".join(nav_links)
+    groups = []
+    for group_label, items in _NAV_GROUPS:
+        links = []
+        for href, label in items:
+            cls = ' class="active" aria-current="page"' if href == active else ""
+            links.append(f'<a href="{href}"{cls}>{label}</a>')
+        groups.append(
+            f'<span class="group"><span class="group-label">{group_label}</span>'
+            f'{"".join(links)}</span>'
+        )
+    nav = "".join(groups)
     html_doc = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -368,9 +422,6 @@ def layout(*, title: str, active: str, body: str) -> bytes:
     return html_doc.encode("utf-8")
 
 
-_MAIN_RE = re.compile(r"(<main>\n)(.*)(\n</main>)", re.DOTALL)
-
-
 def mesh_switcher(path: str, selected: str, options: tuple[tuple[str, str], ...]) -> str:
     """The `?mesh=` selector. Plain links to the same path (other query
     parameters are dropped: a page number or filter from one mesh means
@@ -378,10 +429,103 @@ def mesh_switcher(path: str, selected: str, options: tuple[tuple[str, str], ...]
     bits = []
     for code, label in options:
         if code == selected:
-            bits.append(f"<b>{esc(label)}</b>")
+            bits.append(f'<b aria-current="true">{esc(label)}</b>')
         else:
             bits.append(f'<a href="{esc(path)}?mesh={esc(code)}">{esc(label)}</a>')
-    return f'<p class="muted">Mesh: {" &middot; ".join(bits)}</p>'
+    return f'<nav class="toolbar" aria-label="Mesh">Mesh: {"".join(bits)}</nav>'
+
+
+@dataclass(frozen=True)
+class Section:
+    """One titled block of a page. `collapsed` folds it in the single-mesh
+    view; in the side-by-side view every section folds unless
+    `open_in_compare` (e.g. the map drawing, which is the point of the page)."""
+
+    title: str
+    html: str
+    collapsed: bool = False
+    open_in_compare: bool = False
+
+
+@dataclass(frozen=True)
+class Page:
+    """A dashboard page before chrome: one h1, an optional banner (plain
+    text) and intro (HTML shared by every mesh), the headline numbers as
+    (label, value HTML) pairs, then sections. Headline labels line up the
+    side-by-side table, so the same label must mean the same thing on
+    every mesh."""
+
+    title: str
+    active: str
+    summary: tuple[tuple[str, str], ...] = ()
+    sections: tuple[Section, ...] = ()
+    intro: str = ""
+    banner: str = ""
+    doc_title: str | None = None
+
+
+def _section_html(s: Section, level: int, folded: bool) -> str:
+    if not s.title:
+        return s.html
+    heading = f"<h{level}>{esc(s.title)}</h{level}>"
+    if folded:
+        return f"<details><summary>{heading}</summary>\n{s.html}\n</details>"
+    return f"<section>{heading}\n{s.html}\n</section>"
+
+
+def page_body(p: Page, toolbar: str = "") -> str:
+    """Single-mesh view: title, switcher, warning, intro, headline cards,
+    then each section in page order."""
+    parts = [f"<h1>{esc(p.title)}</h1>", toolbar]
+    if p.banner:
+        parts.append(f'<div class="banner">{esc(p.banner)}</div>')
+    parts.append(p.intro)
+    if p.summary:
+        cards = "".join(stat_card(label, value) for label, value in p.summary)
+        parts.append(f'<div class="grid summary">{cards}</div>')
+    parts.extend(_section_html(s, 2, s.collapsed) for s in p.sections)
+    return "\n".join(part for part in parts if part)
+
+
+def compare_body(pages: list[tuple[str, Page]], toolbar: str = "") -> str:
+    """Side-by-side view of the same page on several meshes: one h1, every
+    mesh's headline numbers in one table (a column per mesh, so a figure is
+    compared without scrolling), then each mesh's sections, folded."""
+    first = pages[0][1]
+    parts = [f"<h1>{esc(first.title)}</h1>", toolbar]
+    parts.extend(
+        f'<div class="banner"><b>{esc(label)}:</b> {esc(p.banner)}</div>'
+        for label, p in pages
+        if p.banner
+    )
+    parts.append(first.intro)
+    labels: list[str] = []
+    for _, p in pages:
+        labels.extend(label for label, _ in p.summary if label not in labels)
+    if labels:
+        values = [dict(p.summary) for _, p in pages]
+        # No <thead>: the column sorter skips this table, whose row order is
+        # the page's own reading order.
+        head = "".join(f'<th scope="col">{esc(label)}</th>' for label, _ in pages)
+        rows = "".join(
+            f'<tr><th scope="row">{esc(label)}</th>'
+            + "".join(f"<td>{v.get(label, '—')}</td>" for v in values)
+            + "</tr>"
+            for label in labels
+        )
+        parts.append(
+            f'<table class="compare"><tbody><tr><th></th>{head}</tr>{rows}</tbody></table>'
+        )
+    for label, p in pages:
+        if not p.sections:
+            continue
+        parts.append(f'<h2 class="mesh">{esc(label)}</h2>')
+        parts.extend(_section_html(s, 3, not s.open_in_compare) for s in p.sections)
+    return "\n".join(part for part in parts if part)
+
+
+def render(p: Page, toolbar: str = "") -> bytes:
+    return layout(title=p.doc_title or p.title, active=p.active, body=page_body(p, toolbar))
 
 
 _HREF_RE = re.compile(r'href="(/[^"?#]*)(\?[^"#]*)?"')
@@ -403,21 +547,6 @@ def propagate_mesh(page: str, code: str) -> str:
         return f'href="{path}{joined}"'
 
     return _HREF_RE.sub(add, page)
-
-
-def main_of(page: bytes) -> str:
-    """The <main> contents of a page `layout` rendered; "" if absent."""
-    m = _MAIN_RE.search(page.decode("utf-8"))
-    return m.group(2) if m else ""
-
-
-def with_main(page: bytes, main: str) -> bytes:
-    """`page` with its <main> contents replaced. The page-body functions
-    return finished documents, so this lets the mesh switcher and the
-    stacked "both" view wrap them without touching every page."""
-    # A function replacement: `main` is page HTML, not a regex template.
-    swapped = _MAIN_RE.sub(lambda m: m.group(1) + main + m.group(3), page.decode("utf-8"), count=1)
-    return swapped.encode("utf-8")
 
 
 def error_page(status: int, message: str) -> bytes:

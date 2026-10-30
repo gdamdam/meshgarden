@@ -43,6 +43,15 @@ ssh -N -L 9109:127.0.0.1:9109 you@your-meshgarden-host
 
 ## Pages
 
+Every page has the same shape: the title, then the headline numbers, then detail sections. Long
+tables (hour-by-hour traffic, book and wordle stats, appeared/disappeared links, 2-hop nodes, per-day
+SNR values, a node's daily rollups) start folded; click a heading to open it. The tabs are grouped
+as Overview (Right now, Traffic, Health), Community (Guestbook, Records, Digest) and Network (Nodes,
+Map, Topology, Propagation).
+
+When two meshes are configured, `?mesh=both` puts their headline numbers in one table, a column per
+mesh, and folds each mesh's detail sections below it; only the map and topology drawings stay open.
+
 | Page | Shows |
 |---|---|
 | `/` | Today's counts, best SNR, last packet age, queue depth, 24-hour activity bars |
@@ -50,13 +59,13 @@ ssh -N -L 9109:127.0.0.1:9109 you@your-meshgarden-host
 | `/traffic` | 24-hour per-hour table, portnum mix, top senders, MQTT/RF split, visitors (messages to the garden from non-LAB nodes since the last `mgarden usefulness --reset`) |
 | `/guestbook` | Visible entries (paginated) and the moderation queue |
 | `/boards` | Topic boards |
-| `/records` | Today, 7-day and all-time bests; book and wordle aggregates |
+| `/records` | One table of bests by period (today, 7 days, all time); book and wordle aggregates |
 | `/digest`, `/digest/<YYYY-MM-DD>` | The daily digest files |
 | `/nodes` | Nodes seen in the last 7 days |
 | `/nodes/<node-id>` | One node's profile: days seen, best and typical SNR and hops, packets (7 days and all-time), position status, battery, a 30-day packets/SNR sparkline, and an event list (first discovered, best hops improved, strongest SNR) |
 | `/map` | Inline-SVG plot centred on the configured observatory (see below) |
 | `/topology` | Radial layout from inferred links: direct neighbours on an inner ring, 2-hop nodes on an outer ring, plus frequency, stability, appeared and disappeared tables |
-| `/propagation` | Per-direct-node SNR-by-day tables and heat strips over 14 days, and an "unusual distance" section flagging days when the furthest direct distance exceeded 1.5x the 14-day median |
+| `/propagation` | One row per direct node with its 14-day SNR heat strip, days heard, best and mean typical SNR (per-day values folded below), and an "unusual distance" section flagging days when the furthest direct distance exceeded 1.5x the 14-day median |
 
 **`/map` details.** Distance rings and node markers show where and how far. Marker colour shows
 the hop class, and opacity fades with age. Faint lines show inferred links. It plots at most 300
